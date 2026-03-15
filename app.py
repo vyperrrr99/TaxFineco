@@ -15,10 +15,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from core.loader import load_config, load_excel, classifica_operazioni
+from core.loader import load_config, load_excel, load_excel_conto, classifica_operazioni
 from core.engine_equity import EngineEquity
+from core.engine_conto import processa_conto, riepilogo_per_anno_strumento, totale_pnl_per_anno
 from core.report import calcola_quadro_rt, esporta_excel
 from core.store import load_storico, save_storico, merge_storico, STORICO_PATH
+from core.store_conto import (
+    load_storico_conto, save_storico_conto, merge_storico_conto, STORICO_CONTO_PATH
+)
 from core import isin_alias
 
 # ============================================================
@@ -121,6 +125,78 @@ with st.sidebar:
                 st.rerun()
             if c2.button("Annulla", use_container_width=True):
                 st.session_state.pop("_confirm_reset", None)
+                st.rerun()
+
+    # ----------------------------------------------------------
+    # Sezione: Movimentazione conto (CFD/Derivati)
+    # ----------------------------------------------------------
+    st.divider()
+    st.markdown("### 📊 Movimentazione conto (CFD)")
+
+    storico_conto_sidebar = load_storico_conto()
+
+    if not storico_conto_sidebar.empty:
+        n_conto = len(storico_conto_sidebar)
+        dc_min = storico_conto_sidebar["Data valuta"].min().strftime("%d/%m/%Y")
+        dc_max = storico_conto_sidebar["Data valuta"].max().strftime("%d/%m/%Y")
+        st.caption(f"**{n_conto}** righe &nbsp;|&nbsp; {dc_min} → {dc_max}")
+    else:
+        st.caption("Nessun dato conto salvato.")
+
+    nuovo_file_conto_sb = st.file_uploader(
+        "Aggiungi movimentazione conto",
+        type=["xlsx", "xls"],
+        key="sidebar_conto_uploader",
+        help="Carica il file Excel della movimentazione del conto Fineco (CFD/Derivati).",
+    )
+
+    if nuovo_file_conto_sb:
+        file_bytes_conto_sb = nuovo_file_conto_sb.read()
+        file_hash_conto_sb = hashlib.md5(file_bytes_conto_sb).hexdigest()
+
+        if st.session_state.get("_sb_conto_last_hash") != file_hash_conto_sb:
+            st.session_state["_sb_conto_last_hash"] = file_hash_conto_sb
+            with st.spinner("Elaborazione conto in corso..."):
+                try:
+                    config_c = load_config()
+                    df_conto_nuovo = load_excel_conto(file_bytes_conto_sb, config_c)
+                    storico_conto_curr = load_storico_conto()
+                    result_c = merge_storico_conto(storico_conto_curr, df_conto_nuovo)
+                    if result_c["n_nuove"] > 0:
+                        save_storico_conto(result_c["df"])
+                    st.session_state["_sb_conto_merge_result"] = result_c
+                except Exception as e:
+                    st.session_state["_sb_conto_merge_result"] = {"error": str(e)}
+            st.rerun()
+
+    if "_sb_conto_merge_result" in st.session_state:
+        mr_c = st.session_state["_sb_conto_merge_result"]
+        if "error" in mr_c:
+            st.error(f"Errore: {mr_c['error']}")
+        elif mr_c["n_nuove"] > 0:
+            st.success(f"✅ +{mr_c['n_nuove']} nuove righe aggiunte")
+            if mr_c["n_duplicate"] > 0:
+                st.caption(f"{mr_c['n_duplicate']} duplicate scartate")
+        else:
+            st.info(f"ℹ️ Nessuna nuova riga ({mr_c['n_duplicate']} duplicate scartate)")
+
+    # Pulsante reset storico conto
+    if not storico_conto_sidebar.empty:
+        if st.button("🗑️ Reset conto", use_container_width=True):
+            st.session_state["_confirm_reset_conto"] = True
+
+        if st.session_state.get("_confirm_reset_conto"):
+            st.warning("Eliminare definitivamente lo storico conto?")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("Sì, elimina", type="primary",
+                          use_container_width=True, key="reset_conto_yes"):
+                STORICO_CONTO_PATH.unlink(missing_ok=True)
+                for key in ["_confirm_reset_conto", "_sb_conto_last_hash",
+                             "_sb_conto_merge_result"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
+            if cc2.button("Annulla", use_container_width=True, key="reset_conto_no"):
+                st.session_state.pop("_confirm_reset_conto", None)
                 st.rerun()
 
     # --- Alias ISIN attivi ---
@@ -235,6 +311,25 @@ def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}") -> dict:
     }
 
 
+@st.cache_data(show_spinner="Elaborazione CFD in corso...")
+def elabora_conto(conto_csv_bytes: bytes) -> dict:
+    """
+    Elabora lo storico della movimentazione conto (CFD/Derivati).
+    Cached per conto_csv_bytes: ricalcola solo quando cambia il file storico conto.
+    """
+    config = load_config()
+    descrizioni_cfd = config.get("descrizioni_cfd_conto", [])
+    df = pd.read_csv(io.BytesIO(conto_csv_bytes), parse_dates=["Data valuta"])
+    df_processed = processa_conto(df, descrizioni_cfd)
+    return {
+        "dettaglio":      df_processed,
+        "riepilogo":      riepilogo_per_anno_strumento(df_processed),
+        "pnl_per_anno":   totale_pnl_per_anno(df_processed),
+        "anni":           sorted(df_processed["Anno"].unique().tolist())
+                          if not df_processed.empty else [],
+    }
+
+
 @st.cache_data(show_spinner=False)
 def _prescan_equity(csv_bytes: bytes) -> pd.DataFrame:
     """
@@ -285,6 +380,23 @@ else:
     except Exception as e:
         st.error(f"❌ Errore imprevisto: {e}")
         st.stop()
+
+
+# ============================================================
+# Caricamento storico conto (CFD/Derivati) — separato da equity
+# ============================================================
+storico_conto_main = load_storico_conto()
+_risultati_conto = None
+_conto_pnl_per_anno: dict = {}
+
+if not storico_conto_main.empty:
+    with open(STORICO_CONTO_PATH, "rb") as _fc:
+        conto_csv_bytes = _fc.read()
+    try:
+        _risultati_conto = elabora_conto(conto_csv_bytes)
+        _conto_pnl_per_anno = _risultati_conto["pnl_per_anno"]
+    except Exception as _e_conto:
+        st.warning(f"⚠️ Errore elaborazione conto CFD: {_e_conto}")
 
 
 # ============================================================
@@ -448,22 +560,20 @@ if not _orphans.empty:
 def dati_per_anno(anno: int, metodo: str) -> dict:
     """Filtra i DataFrame per anno e calcola totali + Quadro RT."""
     df_eq_all = risultati["df_equity_all"]
-    df_cfd_all = risultati["df_cfd_all"]
 
     df_eq = df_eq_all[df_eq_all["Anno"] == anno].copy() if not df_eq_all.empty else pd.DataFrame()
-    df_cfd = df_cfd_all[df_cfd_all["Anno"] == anno].copy() if not df_cfd_all.empty else pd.DataFrame()
 
     totali_eq = {
-        "corrispettivi_eur": df_eq["Controvalore Vendita (€)"].sum() if not df_eq.empty else 0.0,
-        "costi_eur_cmp": df_eq["Costo Carico (€) CMP"].sum() if not df_eq.empty else 0.0,
-        "costi_eur_lifo": df_eq["Costo Carico (€) LIFO"].sum() if not df_eq.empty else 0.0,
-        "plus_minus_eur_cmp": df_eq["Plus/Minus (€) CMP"].sum() if not df_eq.empty else 0.0,
-        "plus_minus_eur_lifo": df_eq["Plus/Minus (€) LIFO"].sum() if not df_eq.empty else 0.0,
+        "corrispettivi_eur":    df_eq["Controvalore Vendita (€)"].sum() if not df_eq.empty else 0.0,
+        "costi_eur_cmp":        df_eq["Costo Carico (€) CMP"].sum()    if not df_eq.empty else 0.0,
+        "costi_eur_lifo":       df_eq["Costo Carico (€) LIFO"].sum()   if not df_eq.empty else 0.0,
+        "plus_minus_eur_cmp":   df_eq["Plus/Minus (€) CMP"].sum()      if not df_eq.empty else 0.0,
+        "plus_minus_eur_lifo":  df_eq["Plus/Minus (€) LIFO"].sum()     if not df_eq.empty else 0.0,
     }
-    totali_cfd = {
-        "pnl_totale_eur": df_cfd["PnL (€)"].sum() if not df_cfd.empty else 0.0,
-        "n_operazioni": len(df_cfd),
-    }
+
+    # PnL CFD dal file della movimentazione conto (non dal file titoli)
+    cfd_pnl = _conto_pnl_per_anno.get(anno, 0.0)
+    totali_cfd = {"pnl_totale_eur": cfd_pnl}
 
     rt = calcola_quadro_rt(
         totali_equity=totali_eq,
@@ -471,7 +581,7 @@ def dati_per_anno(anno: int, metodo: str) -> dict:
         minusvalenze_pregresse=minus_pregresse,
         metodo=metodo,
     )
-    return {"df_eq": df_eq, "df_cfd": df_cfd, "totali_eq": totali_eq, "totali_cfd": totali_cfd, "rt": rt}
+    return {"df_eq": df_eq, "totali_eq": totali_eq, "totali_cfd": totali_cfd, "rt": rt}
 
 
 def dati_storico(metodo: str) -> pd.DataFrame:
@@ -494,7 +604,11 @@ def dati_storico(metodo: str) -> pd.DataFrame:
 # ============================================================
 # TAB NAVIGATION
 # ============================================================
-tab1, tab2 = st.tabs(["📋 Anno Selezionato", "📈 Storico Multi-Anno"])
+tab1, tab2, tab3 = st.tabs([
+    "📋 Anno Selezionato",
+    "📈 Storico Multi-Anno",
+    "📉 CFD / Derivati",
+])
 
 
 # ============================================================
@@ -512,7 +626,6 @@ with tab1:
 
     dati = dati_per_anno(anno_sel, metodo)
     df_eq = dati["df_eq"]
-    df_cfd = dati["df_cfd"]
     totali_eq = dati["totali_eq"]
     totali_cfd = dati["totali_cfd"]
     rt = dati["rt"]
@@ -525,20 +638,29 @@ with tab1:
     col1, col2, col3, col4 = st.columns(4)
 
     plus_minus_equity = totali_eq.get(f"plus_minus_eur_{metodo.lower()}", 0)
-    plus_minus_cfd = totali_cfd.get("pnl_totale_eur", 0)
+    plus_minus_cfd    = totali_cfd.get("pnl_totale_eur", 0)
     plus_minus_totale = rt["rt23_plus_minus_anno"]
 
     with col1:
         st.metric("Plus/Minus Equity", f"{plus_minus_equity:+,.2f} €",
                   help=f"Metodo {metodo}")
     with col2:
-        st.metric("Futures / CFD", "esclusi",
-                  help="Il calcolo futures è escluso dal Quadro RT: "
-                       "il file Fineco non contiene i margini giornalieri "
-                       "necessari per determinare il PnL corretto.")
+        if _risultati_conto is not None:
+            st.metric(
+                "Plus/Minus CFD / Derivati",
+                f"{plus_minus_cfd:+,.2f} €",
+                help="Margine variazione + Oneri/Proventi derivati dal file conto Fineco",
+            )
+        else:
+            st.metric(
+                "CFD / Derivati",
+                "n/d",
+                help="Carica il file della movimentazione conto nella sidebar per includere i CFD.",
+            )
     with col3:
+        cfd_label = "equity + CFD" if _risultati_conto is not None else "solo equity"
         st.metric("Totale anno (RT23)", f"{plus_minus_totale:+,.2f} €",
-                  help="Solo equity (CFD esclusi)")
+                  help=cfd_label)
     with col4:
         st.metric("Imposta 26% (RT26)", f"{rt['rt26_imposta']:,.2f} €",
                   help="Calcolata sull'imponibile netto RT25")
@@ -587,12 +709,20 @@ with tab1:
                 c2.markdown(f"**{v}**")
 
         with col_rt2:
-            st.markdown("**Totale anno**")
-            st.caption("⚠️ Futures/CFD: esclusi (dati Fineco non sufficienti)")
+            st.markdown("**CFD / Derivati + Totale anno**")
+            _cfd_label = (
+                f"{rt['pnl_cfd']:+,.2f} €"
+                if _risultati_conto is not None
+                else "n/d — carica file conto"
+            )
+            c1, c2 = st.columns([2, 1])
+            c1.markdown("PnL CFD netto (Margine + Oneri/Proventi)")
+            c2.markdown(f"**{_cfd_label}**")
+            st.divider()
             for k, v in {
-                "RT23 — Plus/Minus anno (solo equity)": f"{rt['rt23_plus_minus_anno']:+,.2f} €",
+                "RT23 — Plus/Minus anno": f"{rt['rt23_plus_minus_anno']:+,.2f} €",
                 "RT24 — Minus pregresse": f"{rt['rt24_minus_pregresse']:,.2f} €",
-                "RT25 — Imponibile": f"{rt['rt25_imponibile']:,.2f} €",
+                "RT25 — Imponibile":      f"{rt['rt25_imponibile']:,.2f} €",
             }.items():
                 c1, c2 = st.columns([2, 1])
                 c1.markdown(k)
@@ -690,18 +820,44 @@ with tab1:
             st.caption(f"{len(df_show)} operazioni mostrate")
 
     # ----------------------------------------------------------
-    # Tabella CFD (esclusa dal calcolo)
+    # Riepilogo CFD anno selezionato
     # ----------------------------------------------------------
-    with st.expander(f"📉 Operazioni CFD / Futures {anno_sel} — escluse dal calcolo", expanded=False):
-        st.warning(
-            "**Futures e CFD sono esclusi dal calcolo del Quadro RT.**\n\n"
-            "Il file di movimentazione Fineco riporta il Controvalore nozionale "
-            "del contratto, ma per calcolare correttamente il PnL dei futures "
-            "servono i margini giornalieri (mark-to-market) che non sono presenti "
-            "nell'export standard. Il calcolo automatico produrrebbe valori errati.\n\n"
-            "Consulta il **Rendiconto plusvalenze/minusvalenze** scaricabile "
-            "direttamente dall'area personale Fineco per i valori corretti dei futures."
-        )
+    _cfd_title = (
+        f"📉 CFD / Derivati {anno_sel} — PnL: {plus_minus_cfd:+,.2f} €"
+        if _risultati_conto is not None
+        else f"📉 CFD / Derivati {anno_sel} — dati non disponibili"
+    )
+    with st.expander(_cfd_title, expanded=False):
+        if _risultati_conto is None:
+            st.info(
+                "Carica il file della **movimentazione del conto** Fineco nella sidebar "
+                "per visualizzare i PnL di futures e CFD e includerli nel Quadro RT."
+            )
+        else:
+            _riepilogo_conto = _risultati_conto["riepilogo"]
+            _riepilogo_anno  = (
+                _riepilogo_conto[_riepilogo_conto["Anno"] == anno_sel]
+                if not _riepilogo_conto.empty else pd.DataFrame()
+            )
+            if _riepilogo_anno.empty:
+                st.info(f"Nessuna operazione CFD/Derivati nel {anno_sel}.")
+            else:
+                _cols_show = [c for c in [
+                    "Strumento",
+                    "Margine variazione (€)",
+                    "Oneri/Proventi (€)",
+                    "Totale (€)",
+                ] if c in _riepilogo_anno.columns]
+                st.dataframe(
+                    _riepilogo_anno[_cols_show],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                st.caption(
+                    "**Margine variazione** = mark-to-market giornaliero (guadagni/perdite realizzati). "
+                    "**Oneri/Proventi** = costi di finanziamento, dividendi su derivati. "
+                    "Entrambi concorrono al calcolo del Quadro RT."
+                )
 
     # ----------------------------------------------------------
     # Portafoglio residuo e posizioni aperte
@@ -733,9 +889,15 @@ with tab1:
     st.divider()
     st.subheader("💾 Esporta risultati")
     if st.button("Genera file Excel", type="primary", key="export_tab1"):
+        # df_cfd per l'export: riepilogo strumenti dal conto per l'anno selezionato
+        _df_cfd_export = pd.DataFrame()
+        if _risultati_conto is not None and not _risultati_conto["riepilogo"].empty:
+            _df_cfd_export = _risultati_conto["riepilogo"][
+                _risultati_conto["riepilogo"]["Anno"] == anno_sel
+            ].drop(columns=["Anno"], errors="ignore")
         output_path = esporta_excel(
             df_equity=df_eq,
-            df_cfd=df_cfd,
+            df_cfd=_df_cfd_export,
             quadro_rt=rt,
             anno=anno_sel,
             output_folder="output",
@@ -852,3 +1014,141 @@ with tab2:
         use_container_width=True,
         hide_index=True,
     )
+
+
+# ============================================================
+# TAB 3 — CFD / Derivati
+# ============================================================
+with tab3:
+    st.subheader("📉 CFD / Derivati — Riepilogo per Strumento")
+
+    if _risultati_conto is None:
+        st.info(
+            "ℹ️ Nessun dato disponibile. "
+            "Carica il file della **movimentazione del conto** Fineco "
+            "nella sidebar (sezione **📊 Movimentazione conto (CFD)**) "
+            "per calcolare i PnL di futures e CFD."
+        )
+        st.stop()
+
+    _det_conto    = _risultati_conto["dettaglio"]
+    _riepi_conto  = _risultati_conto["riepilogo"]
+    _anni_conto   = _risultati_conto["anni"]
+
+    if not _anni_conto:
+        st.warning("Nessuna operazione CFD/Derivati trovata nel file caricato.")
+        st.stop()
+
+    # Selettore anno
+    _anno_cfd = st.selectbox(
+        "📅 Anno",
+        options=sorted(_anni_conto, reverse=True),
+        index=0,
+        key="anno_tab3",
+    )
+
+    _riepi_anno = (
+        _riepi_conto[_riepi_conto["Anno"] == _anno_cfd].copy()
+        if not _riepi_conto.empty else pd.DataFrame()
+    )
+
+    # ----------------------------------------------------------
+    # KPI anno CFD
+    # ----------------------------------------------------------
+    _tot_margine = _riepi_anno["Margine variazione (€)"].sum() if not _riepi_anno.empty else 0.0
+    _tot_oneri   = _riepi_anno["Oneri/Proventi (€)"].sum()     if not _riepi_anno.empty else 0.0
+    _tot_cfd     = _riepi_anno["Totale (€)"].sum()             if not _riepi_anno.empty else 0.0
+
+    kc1, kc2, kc3 = st.columns(3)
+    kc1.metric("Margine variazione", f"{_tot_margine:+,.2f} €",
+               help="Somma dei margini di variazione derivati (mark-to-market)")
+    kc2.metric("Oneri / Proventi",   f"{_tot_oneri:+,.2f} €",
+               help="Oneri CFD, Proventi CFD, dividendi su derivati")
+    kc3.metric("Totale PnL CFD",     f"{_tot_cfd:+,.2f} €",
+               help="Margine + Oneri/Proventi — incluso nel Quadro RT")
+
+    st.divider()
+
+    # ----------------------------------------------------------
+    # Bar chart per strumento
+    # ----------------------------------------------------------
+    if not _riepi_anno.empty:
+        _chart_data = _riepi_anno.sort_values("Totale (€)", ascending=True)
+
+        fig_cfd = px.bar(
+            _chart_data,
+            x="Totale (€)",
+            y="Strumento",
+            orientation="h",
+            color="Totale (€)",
+            color_continuous_scale=["#d62728", "#aec7e8", "#2ca02c"],
+            color_continuous_midpoint=0,
+            labels={"Totale (€)": "PnL (€)", "Strumento": ""},
+            title=f"PnL per Strumento CFD/Derivati — {_anno_cfd}",
+            template="plotly_white",
+            height=max(300, len(_chart_data) * 40 + 100),
+        )
+        fig_cfd.update_layout(
+            coloraxis_showscale=False,
+            margin=dict(l=0, r=20, t=40, b=20),
+        )
+        fig_cfd.add_vline(x=0, line_width=1, line_color="gray")
+        st.plotly_chart(fig_cfd, use_container_width=True)
+
+    # ----------------------------------------------------------
+    # Tabella dettaglio per strumento
+    # ----------------------------------------------------------
+    st.subheader(f"📋 Dettaglio per strumento — {_anno_cfd}")
+    if _riepi_anno.empty:
+        st.info(f"Nessuna operazione CFD/Derivati nel {_anno_cfd}.")
+    else:
+        _cols_tbl = [c for c in [
+            "Strumento",
+            "Margine variazione (€)",
+            "Oneri/Proventi (€)",
+            "Totale (€)",
+        ] if c in _riepi_anno.columns]
+        st.dataframe(
+            _riepi_anno[_cols_tbl],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    # ----------------------------------------------------------
+    # Storico multi-anno CFD
+    # ----------------------------------------------------------
+    st.divider()
+    st.subheader("📈 Storico PnL CFD — tutti gli anni")
+
+    if not _det_conto.empty:
+        _storico_cfd = (
+            _det_conto.groupby("Anno")["PnL (€)"]
+            .sum()
+            .round(2)
+            .reset_index()
+        )
+        _storico_cfd["Cumulato (€)"] = _storico_cfd["PnL (€)"].cumsum().round(2)
+
+        fig_cfd_hist = px.bar(
+            _storico_cfd,
+            x="Anno",
+            y="PnL (€)",
+            color="PnL (€)",
+            color_continuous_scale=["#d62728", "#aec7e8", "#2ca02c"],
+            color_continuous_midpoint=0,
+            labels={"PnL (€)": "PnL (€)", "Anno": "Anno"},
+            title="PnL CFD/Derivati per anno",
+            template="plotly_white",
+        )
+        fig_cfd_hist.add_hline(y=0, line_width=1, line_color="gray")
+        fig_cfd_hist.update_layout(
+            coloraxis_showscale=False,
+            margin=dict(l=0, r=20, t=40, b=20),
+        )
+        st.plotly_chart(fig_cfd_hist, use_container_width=True)
+
+        st.dataframe(
+            _storico_cfd.rename(columns={"PnL (€)": f"PnL CFD (€)"}),
+            hide_index=True,
+            use_container_width=True,
+        )

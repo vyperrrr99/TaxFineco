@@ -173,6 +173,116 @@ def load_excel(
     return df
 
 
+def _detect_header_row_conto(source: Union[str, Path, bytes, io.BytesIO]) -> int:
+    """
+    Rileva la riga degli header nel file Excel della movimentazione conto Fineco.
+    Cerca la prima riga (tra le prime 10) che contiene "Entrate" o "Uscite".
+    """
+    try:
+        if isinstance(source, (str, Path)):
+            raw = pd.read_excel(source, header=None, nrows=10)
+        elif isinstance(source, bytes):
+            raw = pd.read_excel(io.BytesIO(source), header=None, nrows=10)
+        elif isinstance(source, io.BytesIO):
+            pos = source.tell()
+            raw = pd.read_excel(source, header=None, nrows=10)
+            source.seek(pos)
+        else:
+            return 0
+    except Exception:
+        return 0
+
+    for i, row in raw.iterrows():
+        row_str = row.astype(str)
+        if (
+            row_str.str.contains("Entrate", case=False, na=False).any()
+            or row_str.str.contains("Uscite", case=False, na=False).any()
+        ):
+            return int(i)
+
+    return 0
+
+
+def load_excel_conto(
+    source: Union[str, Path, bytes, io.BytesIO],
+    config: dict,
+) -> pd.DataFrame:
+    """
+    Carica il file Excel della movimentazione del conto Fineco.
+
+    Il file ha colonne diverse dal file movimentazione titoli:
+    contiene Entrate, Uscite, Descrizione, Descrizione Completa.
+    Usato per estrarre PnL di CFD/Derivati (margini, oneri, proventi).
+
+    Args:
+        source: path al file oppure bytes/BytesIO.
+        config: dizionario di configurazione da config.yaml.
+
+    Returns:
+        DataFrame pulito con Data valuta, Descrizione, Descrizione Completa,
+        Entrate, Uscite e tutte le altre colonne presenti.
+
+    Raises:
+        ValueError: se mancano colonne obbligatorie.
+    """
+    header_row = _detect_header_row_conto(source)
+
+    # --- Lettura grezza ---
+    if isinstance(source, (str, Path)):
+        raw_df = pd.read_excel(source, skiprows=header_row)
+    elif isinstance(source, bytes):
+        raw_df = pd.read_excel(io.BytesIO(source), skiprows=header_row)
+    elif isinstance(source, io.BytesIO):
+        source.seek(0)
+        raw_df = pd.read_excel(source, skiprows=header_row)
+    else:
+        raise TypeError(f"Tipo sorgente non supportato: {type(source)}")
+
+    # --- Colonna data: usa "Operazione" (trade date) se presente ---
+    if "Operazione" in raw_df.columns:
+        if "Data valuta" in raw_df.columns:
+            raw_df = raw_df.drop(columns=["Data valuta"])
+        raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})
+
+    # --- Validazione colonne ---
+    colonne_attese = config.get("colonne_conto_attese", [])
+    mancanti = [c for c in colonne_attese if c not in raw_df.columns]
+    if mancanti:
+        raise ValueError(
+            f"Colonne mancanti nel file conto: {', '.join(mancanti)}\n"
+            f"Colonne trovate: {', '.join(raw_df.columns.tolist())}"
+        )
+
+    df = raw_df.copy()
+
+    # --- Conversione tipi ---
+    df["Data valuta"] = pd.to_datetime(df["Data valuta"], dayfirst=True, errors="coerce")
+
+    for col in ["Entrate", "Uscite"]:
+        if col in df.columns:
+            if df[col].dtype == object:
+                df[col] = (
+                    df[col]
+                    .astype(str)
+                    .str.replace(r"[^\d.\-]", "", regex=True)
+                )
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    # --- Pulizia ---
+    df.dropna(subset=["Data valuta"], inplace=True)
+
+    for col in ["Descrizione", "Descrizione Completa"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+
+    # --- Ordinamento cronologico ---
+    df.sort_values(by="Data valuta", ascending=True, inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    print(f"[loader_conto] Caricate {len(df)} righe")
+    return df
+
+
 def classifica_operazioni(df: pd.DataFrame, config: dict) -> dict[str, pd.DataFrame]:
     """
     Suddivide il DataFrame in sotto-dataset per tipo di operazione.
