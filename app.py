@@ -338,32 +338,80 @@ if not _orphans.empty:
             f"Le associazioni vengono salvate permanentemente in `data/isin_alias.json`."
         )
 
+        def _fmt_tx(df_src: pd.DataFrame, isin_filter: str, segno: str) -> pd.DataFrame:
+            """
+            Filtra per ISIN e segno (A/V), restituisce una tabella compatta
+            ordinata cronologicamente con le colonne rilevanti.
+            """
+            mask = (
+                df_src["Isin"].astype(str) == isin_filter
+            ) & (
+                df_src["Segno"].str.upper() == segno
+            )
+            cols = [c for c in ["Data valuta", "Quantita", "Prezzo", "Controvalore"]
+                    if c in df_src.columns]
+            df_f = df_src.loc[mask, cols].sort_values("Data valuta").copy().reset_index(drop=True)
+            if "Data valuta" in df_f.columns:
+                df_f["Data valuta"] = df_f["Data valuta"].dt.strftime("%d/%m/%Y")
+            for _col, _dec in [("Quantita", 4), ("Prezzo", 4), ("Controvalore", 2)]:
+                if _col in df_f.columns:
+                    df_f[_col] = df_f[_col].round(_dec)
+            return df_f.rename(columns={
+                "Data valuta":  "Data",
+                "Quantita":     "Qtà",
+                "Controvalore": "Ctv (€)",
+            })
+
         with st.form("orphan_alias_form"):
             _choices: dict[str, str] = {}   # sell_isin → buy_isin | "IGNORE"
 
             for _, _orphan in _orphans.iterrows():
-                _sell_isin   = str(_orphan["Isin"])
-                _sell_title  = str(_orphan["Titolo"])
-                _data_prima  = _orphan["Data valuta"].strftime("%d/%m/%Y")
+                _sell_isin  = str(_orphan["Isin"])
+                _sell_title = str(_orphan["Titolo"])
 
-                col_a, col_b = st.columns([2, 3])
-                col_a.markdown(f"**`{_sell_isin}`**")
-                col_b.markdown(f"*{_sell_title}* — prima vendita: {_data_prima}")
+                # ── Intestazione ─────────────────────────────────────────
+                st.markdown(f"#### `{_sell_isin}` — {_sell_title}")
 
                 _suggestions = isin_alias.suggerisci_alias(
                     _sell_isin, _sell_title, _df_eq_prescan
                 )
 
+                # ── Layout a due colonne: vendite | acquisti candidati ───
+                _col_v, _col_a = st.columns(2)
+
+                with _col_v:
+                    st.markdown("**📤 Vendite da riconciliare**")
+                    _tbl_v = _fmt_tx(_df_eq_prescan, _sell_isin, "V")
+                    if not _tbl_v.empty:
+                        st.dataframe(_tbl_v, hide_index=True, use_container_width=True)
+                    else:
+                        st.caption("Nessuna vendita trovata.")
+
+                with _col_a:
+                    st.markdown("**📥 Acquisti candidati**")
+                    if not _suggestions:
+                        st.caption("Nessun titolo simile trovato negli acquisti.")
+                    else:
+                        for _s in _suggestions:
+                            _buy_isin  = _s["isin_acquisto"]
+                            _buy_title = _s["titolo_acquisto"]
+                            _score     = _s["score"]
+                            st.markdown(
+                                f"**`{_buy_isin}`** — {_buy_title} &nbsp; "
+                                f"*({_score * 100:.0f}% simile)*"
+                            )
+                            _tbl_a = _fmt_tx(_df_eq_prescan, _buy_isin, "A")
+                            if not _tbl_a.empty:
+                                st.dataframe(_tbl_a, hide_index=True, use_container_width=True)
+                            else:
+                                st.caption("Nessun acquisto trovato.")
+
+                # ── Selezione ────────────────────────────────────────────
                 if not _suggestions:
-                    st.caption(
-                        "Nessun titolo simile trovato negli acquisti. "
-                        "Sarà ignorata automaticamente."
-                    )
                     _choices[_sell_isin] = "IGNORE"
                 else:
                     _opt_labels = ["— Ignora (nessuna corrispondenza) —"] + [
-                        f"{s['titolo_acquisto']}  [{s['isin_acquisto']}]"
-                        f"  — {s['score'] * 100:.0f}% simile"
+                        f"{s['titolo_acquisto']}  [{s['isin_acquisto']}]  — {s['score'] * 100:.0f}% simile"
                         for s in _suggestions
                     ]
                     _sel = st.radio(

@@ -50,7 +50,11 @@ def _detect_header_row(source: Union[str, Path, bytes, io.BytesIO]) -> int:
         return 0
 
     for i, row in raw.iterrows():
-        if row.astype(str).str.contains("Data valuta", case=False, na=False).any():
+        row_str = row.astype(str)
+        if (
+            row_str.str.contains("Operazione", case=False, na=False).any()
+            or row_str.str.contains("Data valuta", case=False, na=False).any()
+        ):
             return int(i)
 
     return 0
@@ -87,6 +91,17 @@ def load_excel(
         raw_df = pd.read_excel(source, skiprows=header_row)
     else:
         raise TypeError(f"Tipo sorgente non supportato: {type(source)}")
+
+    # --- Colonna data: usa "Operazione" (data trade) se presente,
+    #     altrimenti "Data valuta" (data regolamento) come fallback.
+    #     Il rename avviene prima della validazione così colonne_attese
+    #     continua a richiedere "Data valuta" senza dover modificare config.
+    if "Operazione" in raw_df.columns:
+        # Il file nuovo ha già una colonna "Data valuta" (regolamento):
+        # la rimuoviamo prima di rinominare "Operazione" (trade date) al suo posto.
+        if "Data valuta" in raw_df.columns:
+            raw_df = raw_df.drop(columns=["Data valuta"])
+        raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})
 
     # --- Validazione colonne ---
     colonne_attese = config.get("colonne_attese", [])
