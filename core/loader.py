@@ -176,16 +176,17 @@ def load_excel(
 def _detect_header_row_conto(source: Union[str, Path, bytes, io.BytesIO]) -> int:
     """
     Rileva la riga degli header nel file Excel della movimentazione conto Fineco.
-    Cerca la prima riga (tra le prime 10) che contiene "Entrate" o "Uscite".
+    Cerca la prima riga (tra le prime 20) che contiene "Entrate" o "Uscite".
+    Il file Fineco ha un preambolo di ~12 righe prima degli header effettivi.
     """
     try:
         if isinstance(source, (str, Path)):
-            raw = pd.read_excel(source, header=None, nrows=10)
+            raw = pd.read_excel(source, header=None, nrows=20)
         elif isinstance(source, bytes):
-            raw = pd.read_excel(io.BytesIO(source), header=None, nrows=10)
+            raw = pd.read_excel(io.BytesIO(source), header=None, nrows=20)
         elif isinstance(source, io.BytesIO):
             pos = source.tell()
-            raw = pd.read_excel(source, header=None, nrows=10)
+            raw = pd.read_excel(source, header=None, nrows=20)
             source.seek(pos)
         else:
             return 0
@@ -195,8 +196,8 @@ def _detect_header_row_conto(source: Union[str, Path, bytes, io.BytesIO]) -> int
     for i, row in raw.iterrows():
         row_str = row.astype(str)
         if (
-            row_str.str.contains("Entrate", case=False, na=False).any()
-            or row_str.str.contains("Uscite", case=False, na=False).any()
+            row_str.str.contains(r"\bEntrate\b", case=False, na=False, regex=True).any()
+            or row_str.str.contains(r"\bUscite\b", case=False, na=False, regex=True).any()
         ):
             return int(i)
 
@@ -238,8 +239,18 @@ def load_excel_conto(
     else:
         raise TypeError(f"Tipo sorgente non supportato: {type(source)}")
 
-    # --- Colonna data: usa "Operazione" (trade date) se presente ---
-    if "Operazione" in raw_df.columns:
+    # --- Normalizza nomi colonne: underscore → spazio ---
+    # Il file Fineco conto usa Data_Operazione, Data_Valuta, Descrizione_Completa
+    raw_df.columns = [str(c).replace("_", " ").strip() for c in raw_df.columns]
+
+    # --- Colonna data: usa "Data Operazione" (trade date) → "Data valuta" ---
+    if "Data Operazione" in raw_df.columns:
+        if "Data Valuta" in raw_df.columns:
+            raw_df = raw_df.drop(columns=["Data Valuta"])
+        raw_df = raw_df.rename(columns={"Data Operazione": "Data valuta"})
+    elif "Data Valuta" in raw_df.columns:
+        raw_df = raw_df.rename(columns={"Data Valuta": "Data valuta"})
+    elif "Operazione" in raw_df.columns:
         if "Data valuta" in raw_df.columns:
             raw_df = raw_df.drop(columns=["Data valuta"])
         raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})

@@ -54,7 +54,6 @@ isin_alias_check_from_anno: 2025
 colonne_conto_attese:
   - "Data valuta"
   - "Entrate"
-  - "Uscite"
   - "Descrizione"
   - "Descrizione Completa"
 

@@ -50,8 +50,9 @@ _PREFISSI_PRODOTTO = ["SUPER ", "USA ", "MINI "]
 # Mese abbreviato + 2 cifre anno (es. JAN26, FEB25, DEC24)
 _PAT_MONTHYEAR = re.compile(r"\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}\b")
 
-# Codici contratto Fineco (es. CD53352102283138)
-_PAT_CONTRACTCODE = re.compile(r"\bCD[A-Z0-9]{6,}\b")
+# Codici contratto Fineco — prefisso 2 lettere maiuscole + 10+ cifre
+# Copre sia CD... (equity/futures) che CX... (forex/CFD) e simili
+_PAT_CONTRACTCODE = re.compile(r"\b[A-Z]{2}[0-9]{10,}\b")
 
 
 def _extract_instrument(desc_completa: str) -> str:
