@@ -105,8 +105,8 @@ def load_excel(
         df["Data valuta"], dayfirst=True, errors="coerce"
     )
 
-    # Colonne numeriche: rimuove separatori migliaia e converte
-    colonne_numeriche = ["Quantita", "Prezzo", "Cambio", "Controvalore", "QTY", "Val Unit €"]
+    # Colonne numeriche obbligatorie: rimuove separatori migliaia e converte
+    colonne_numeriche = ["Quantita", "Prezzo", "Cambio", "Controvalore"]
     for col in colonne_numeriche:
         if col in df.columns:
             # Gestisce sia float che stringhe con virgola/punto come separatore
@@ -117,6 +117,15 @@ def load_excel(
                     .str.replace(r"[^\d.\-]", "", regex=True)
                 )
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Colonne commissioni/spese (presenti solo nel nuovo formato Fineco):
+    # rilevate dinamicamente e convertite a numerico; NaN → 0
+    colonne_commissioni = [
+        c for c in df.columns
+        if any(kw in c.lower() for kw in ["commissioni", "commissione", "spese"])
+    ]
+    for col in colonne_commissioni:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
     # --- Pulizia ---
     righe_prima = len(df)

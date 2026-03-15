@@ -21,8 +21,6 @@ colonne_attese:
   - "Prezzo"
   - "Cambio"
   - "Controvalore"
-  - "QTY"
-  - "Val Unit €"
 
 # Tipi di operazione riconosciuti
 # Equity: operazioni su azioni, ETF, bond, ETP
@@ -35,6 +33,7 @@ operazioni_equity:
 # Aggiungi qui le stringhe esatte che compaiono nella colonna "Descrizione" del tuo Excel
 operazioni_cfd:
   - "Compravendita CFD"
+  - "Compravendita future"
   - "CFD"
   - "Futures"
 
