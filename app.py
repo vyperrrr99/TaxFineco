@@ -585,20 +585,20 @@ def dati_per_anno(anno: int, metodo: str) -> dict:
 
 
 def dati_storico(metodo: str) -> pd.DataFrame:
-    """Costruisce DataFrame storico per tutti gli anni (solo equity, CFD esclusi)."""
+    """Costruisce DataFrame storico per tutti gli anni (Equity + CFD)."""
     df_eq_all = risultati["df_equity_all"]
     righe = []
     for anno in anni_disponibili:
-        df_eq = df_eq_all[df_eq_all["Anno"] == anno] if not df_eq_all.empty else pd.DataFrame()
-        pm_eq = df_eq[f"Plus/Minus (€) {metodo}"].sum() if not df_eq.empty else 0.0
+        df_eq  = df_eq_all[df_eq_all["Anno"] == anno] if not df_eq_all.empty else pd.DataFrame()
+        pm_eq  = df_eq[f"Plus/Minus (€) {metodo}"].sum() if not df_eq.empty else 0.0
+        pm_cfd = _conto_pnl_per_anno.get(anno, 0.0)
         righe.append({
-            "Anno": anno,
+            "Anno":              anno,
             "Plus/Minus Equity": round(pm_eq, 2),
+            "Plus/Minus CFD":    round(pm_cfd, 2),
+            "Plus/Minus Totale": round(pm_eq + pm_cfd, 2),
         })
-    df = pd.DataFrame(righe)
-    if not df.empty:
-        df["Cumulato"] = df["Plus/Minus Equity"].cumsum().round(2)
-    return df
+    return pd.DataFrame(righe)
 
 
 # ============================================================
@@ -925,6 +925,42 @@ with tab2:
         st.info("Nessun dato storico disponibile.")
         st.stop()
 
+    # ----------------------------------------------------------
+    # Selettore visualizzazione
+    # ----------------------------------------------------------
+    _ha_cfd_storico = _risultati_conto is not None and bool(_conto_pnl_per_anno)
+    _opzioni_vista = (
+        ["🏦 Equity", "📉 CFD / Derivati", "📊 Totale (Equity + CFD)"]
+        if _ha_cfd_storico
+        else ["🏦 Equity"]
+    )
+    _vista = st.radio(
+        "Visualizza",
+        options=_opzioni_vista,
+        horizontal=True,
+        key="vista_storico",
+    )
+
+    # Mappa selezione → colonna DataFrame e testi UI
+    if "CFD" in _vista and "Totale" not in _vista:
+        _col_pm      = "Plus/Minus CFD"
+        _titolo_bar  = "Plus/Minus annuale CFD / Derivati"
+        _titolo_line = "Plus/Minus CFD cumulato nel periodo"
+        _titolo_tab  = "📋 Riepilogo per anno — CFD / Derivati"
+    elif "Totale" in _vista:
+        _col_pm      = "Plus/Minus Totale"
+        _titolo_bar  = f"Plus/Minus annuale Totale (Equity {metodo} + CFD)"
+        _titolo_line = "Plus/Minus totale cumulato nel periodo"
+        _titolo_tab  = "📋 Riepilogo per anno — Totale"
+    else:
+        _col_pm      = "Plus/Minus Equity"
+        _titolo_bar  = f"Plus/Minus annuale Equity — {metodo}"
+        _titolo_line = f"Plus/Minus Equity cumulato ({metodo})"
+        _titolo_tab  = "📋 Riepilogo per anno — solo Equity"
+
+    # ----------------------------------------------------------
+    # Range anni
+    # ----------------------------------------------------------
     anni_min = int(df_storico["Anno"].min())
     anni_max = int(df_storico["Anno"].max())
 
@@ -944,33 +980,39 @@ with tab2:
         (df_storico["Anno"] <= anno_range[1])
     ].copy()
 
-    df_storico_filt["Cumulato"] = df_storico_filt["Plus/Minus Equity"].cumsum().round(2)
+    df_storico_filt["Cumulato"] = df_storico_filt[_col_pm].cumsum().round(2)
 
     # ----------------------------------------------------------
     # KPI riepilogo range
     # ----------------------------------------------------------
-    eq_range = df_storico_filt["Plus/Minus Equity"].sum()
-    n_anni = len(df_storico_filt)
+    _tot_eq_rng  = df_storico_filt["Plus/Minus Equity"].sum()
+    _tot_cfd_rng = df_storico_filt["Plus/Minus CFD"].sum() if "Plus/Minus CFD" in df_storico_filt.columns else 0.0
+    n_anni       = len(df_storico_filt)
 
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Equity periodo", f"{eq_range:+,.2f} €")
-    k2.metric("Anni nel range", str(n_anni))
-    k3.metric("Futures / CFD", "esclusi", help="Esclusi dal calcolo — vedi sezione futures in Tab 1")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Equity periodo", f"{_tot_eq_rng:+,.2f} €", help=f"Metodo {metodo}")
+    if _ha_cfd_storico:
+        k2.metric("CFD / Derivati periodo", f"{_tot_cfd_rng:+,.2f} €")
+        k3.metric("Totale periodo", f"{(_tot_eq_rng + _tot_cfd_rng):+,.2f} €")
+    else:
+        k2.metric("CFD / Derivati", "n/d", help="Carica il file conto per includere i CFD")
+        k3.metric("Totale periodo", f"{_tot_eq_rng:+,.2f} €", help="Solo equity")
+    k4.metric("Anni nel range", str(n_anni))
 
     st.divider()
 
     # ----------------------------------------------------------
-    # Bar chart: plus/minus annuale (equity + CFD)
+    # Bar chart: plus/minus annuale
     # ----------------------------------------------------------
     fig_bar = px.bar(
         df_storico_filt,
         x="Anno",
-        y="Plus/Minus Equity",
-        color="Plus/Minus Equity",
+        y=_col_pm,
+        color=_col_pm,
         color_continuous_scale=["#d62728", "#aec7e8", "#2ca02c"],
         color_continuous_midpoint=0,
-        labels={"Plus/Minus Equity": "Plus/Minus (€)", "Anno": "Anno"},
-        title=f"Plus/Minus annuale Equity — {metodo} (Futures/CFD esclusi)",
+        labels={_col_pm: "Plus/Minus (€)", "Anno": "Anno"},
+        title=_titolo_bar,
         template="plotly_white",
     )
     fig_bar.add_hline(y=0, line_width=1, line_color="gray")
@@ -993,7 +1035,7 @@ with tab2:
     ))
     fig_line.add_hline(y=0, line_width=1, line_color="gray", line_dash="dot")
     fig_line.update_layout(
-        title="Plus/Minus cumulato nel periodo (solo Equity)",
+        title=_titolo_line,
         xaxis_title="Anno",
         yaxis_title="Cumulato (€)",
         template="plotly_white",
@@ -1005,12 +1047,19 @@ with tab2:
     # ----------------------------------------------------------
     # Tabella riepilogo per anno
     # ----------------------------------------------------------
-    st.subheader("📋 Riepilogo per anno (solo Equity)")
+    st.subheader(_titolo_tab)
+    _rename_map = {
+        "Plus/Minus Equity":  f"Equity ({metodo}) (€)",
+        "Plus/Minus CFD":     "CFD / Derivati (€)",
+        "Plus/Minus Totale":  "Totale (€)",
+        "Cumulato":           "Cumulato (€)",
+    }
+    _cols_tab = ["Anno", "Plus/Minus Equity"]
+    if _ha_cfd_storico:
+        _cols_tab += ["Plus/Minus CFD", "Plus/Minus Totale"]
+    _cols_tab.append("Cumulato")
     st.dataframe(
-        df_storico_filt.rename(columns={
-            "Plus/Minus Equity": f"Plus/Minus Equity ({metodo}) (€)",
-            "Cumulato": "Cumulato (€)",
-        }),
+        df_storico_filt[_cols_tab].rename(columns=_rename_map),
         use_container_width=True,
         hide_index=True,
     )
