@@ -68,11 +68,18 @@ def merge_storico(storico: pd.DataFrame, nuovo: pd.DataFrame) -> dict:
     """
     if storico.empty:
         df_nuovo_norm = _normalizza_chiavi(nuovo.copy())
-        df_sorted = df_nuovo_norm.sort_values("Data valuta").reset_index(drop=True)
+        # Deduplicazione interna: il file sorgente può contenere righe identiche
+        # (stessa data/ISIN/segno/qty/controvalore). Senza questo step,
+        # al caricamento successivo quelle righe verrebbero rimosse come dup
+        # causando n_nuove negativo e lo storico che "si restringe".
+        n_prima = len(df_nuovo_norm)
+        df_dedup = df_nuovo_norm.drop_duplicates(subset=CHIAVE_DEDUP, keep="first")
+        n_duplicate = n_prima - len(df_dedup)
+        df_sorted = df_dedup.sort_values("Data valuta").reset_index(drop=True)
         return {
             "df": df_sorted,
             "n_nuove": len(df_sorted),
-            "n_duplicate": 0,
+            "n_duplicate": n_duplicate,
         }
 
     storico_norm = _normalizza_chiavi(storico.copy())

@@ -177,3 +177,24 @@ class TestMergeStorico:
         assert len(result3["df"]) == 2
         assert result2["n_nuove"] == 0
         assert result3["n_nuove"] == 0
+
+    def test_storico_vuoto_deduplicazione_interna_file_sorgente(self):
+        """
+        Regressione: il file sorgente può contenere righe interne duplicate
+        (es. split o doppio export). Con storico vuoto il primo caricamento
+        deve deduplicarle; il secondo caricamento non deve trovare «nuove» righe.
+        """
+        # Riga duplicata internamente al file sorgente
+        riga = _row()
+        df_con_dup = _df(riga, riga)  # stesso record due volte
+
+        result1 = merge_storico(pd.DataFrame(), df_con_dup)
+        # Il primo caricamento salva solo 1 riga unica
+        assert len(result1["df"]) == 1
+        assert result1["n_nuove"] == 1
+        assert result1["n_duplicate"] == 1
+
+        # Il secondo caricamento non deve trovare nuove righe né espandere lo storico
+        result2 = merge_storico(result1["df"], df_con_dup)
+        assert len(result2["df"]) == 1
+        assert result2["n_nuove"] == 0
