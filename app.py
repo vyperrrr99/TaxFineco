@@ -8,6 +8,7 @@ Avvio:
 
 import hashlib
 import io
+import json
 
 import pandas as pd
 import plotly.express as px
@@ -18,6 +19,7 @@ from core.loader import load_config, load_excel, classifica_operazioni
 from core.engine_equity import EngineEquity
 from core.report import calcola_quadro_rt, esporta_excel
 from core.store import load_storico, save_storico, merge_storico, STORICO_PATH
+from core import isin_alias
 
 # ============================================================
 # Config Streamlit
@@ -121,6 +123,29 @@ with st.sidebar:
                 st.session_state.pop("_confirm_reset", None)
                 st.rerun()
 
+    # --- Alias ISIN attivi ---
+    _sb_alias = isin_alias.load_alias_map()
+    if _sb_alias["alias"] or _sb_alias["ignored"]:
+        st.divider()
+        with st.expander("🔗 Alias ISIN", expanded=False):
+            if _sb_alias["alias"]:
+                st.markdown("**Associazioni attive:**")
+                st.dataframe(
+                    pd.DataFrame([
+                        {"ISIN vendita": k, "→ ISIN acquisto": v}
+                        for k, v in _sb_alias["alias"].items()
+                    ]),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            if _sb_alias["ignored"]:
+                st.markdown("**Ignorati:**")
+                st.caption(", ".join(f"`{x}`" for x in _sb_alias["ignored"]))
+            if st.button("🗑️ Rimuovi tutti gli alias", key="del_all_alias",
+                         use_container_width=True):
+                isin_alias.save_alias_map({}, [])
+                st.rerun()
+
     st.divider()
     st.caption("Calcolo Tasse Fineco v2.0")
     st.caption("Solo per uso personale — verifica sempre con un commercialista.")
@@ -142,13 +167,24 @@ st.markdown(
 # (la chiave di cache è csv_bytes, che cambia ad ogni modifica del file).
 # ============================================================
 @st.cache_data(show_spinner="Elaborazione in corso...")
-def elabora_tutto(csv_bytes: bytes) -> dict:
+def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}") -> dict:
     """
     Esegue la pipeline completa sul dataset (passato come CSV bytes).
     Calcola sia CMP che LIFO — il filtro metodo è applicato a valle.
+
+    alias_bytes: JSON-serializzato del mapping {sell_isin: buy_isin}.
+        Fa parte della chiave di cache: cambiare gli alias invalida il calcolo.
     """
     config = load_config()
     df = pd.read_csv(io.BytesIO(csv_bytes), parse_dates=["Data valuta"])
+
+    # Applica alias ISIN (operazioni societarie: cambio codice/nome).
+    # Il remapping avviene PRIMA di classifica_operazioni, in modo che
+    # l'engine equity trovi la posizione usando l'ISIN di acquisto corretto.
+    _alias_map = json.loads(alias_bytes)
+    if _alias_map:
+        df["Isin"] = df["Isin"].astype(str).map(lambda x: _alias_map.get(x, x))
+
     dataset = classifica_operazioni(df, config)
 
     engine_eq = EngineEquity()
@@ -199,6 +235,18 @@ def elabora_tutto(csv_bytes: bytes) -> dict:
     }
 
 
+@st.cache_data(show_spinner=False)
+def _prescan_equity(csv_bytes: bytes) -> pd.DataFrame:
+    """
+    Carica e classifica la sola colonna equity del dataset.
+    Usato per il rilevamento delle vendite orfane — NON applica alias.
+    Cached per csv_bytes: ricalcola solo quando cambia il dataset.
+    """
+    config = load_config()
+    df = pd.read_csv(io.BytesIO(csv_bytes), parse_dates=["Data valuta"])
+    return classifica_operazioni(df, config)["equity"]
+
+
 # ============================================================
 # Determina sorgente dati: storico CSV oppure upload diretto
 # ============================================================
@@ -208,15 +256,6 @@ if not storico_main.empty:
     # --- Flusso primario: storico persistente ---
     with open(STORICO_PATH, "rb") as _f:
         csv_bytes = _f.read()
-
-    try:
-        risultati = elabora_tutto(csv_bytes)
-    except ValueError as e:
-        st.error(f"❌ Errore nello storico: {e}")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Errore imprevisto: {e}")
-        st.stop()
 
 else:
     # --- Flusso di fallback: caricamento diretto senza salvataggio ---
@@ -236,11 +275,10 @@ else:
 
     try:
         file_bytes = uploaded_file.read()
-        config = load_config()
-        df_direct = load_excel(file_bytes, config)
+        _config_fb = load_config()
+        df_direct = load_excel(file_bytes, _config_fb)
         # Converti in CSV bytes per uniformità con il flusso storico
         csv_bytes = df_direct.to_csv(index=False).encode("utf-8")
-        risultati = elabora_tutto(csv_bytes)
     except ValueError as e:
         st.error(f"❌ Errore nel file: {e}")
         st.stop()
@@ -249,11 +287,111 @@ else:
         st.stop()
 
 
+# ============================================================
+# Alias ISIN + calcolo risultati (cached)
+# ============================================================
+_alias_data = isin_alias.load_alias_map()
+_alias_bytes = json.dumps(_alias_data["alias"], sort_keys=True).encode()
+
+try:
+    risultati = elabora_tutto(csv_bytes, _alias_bytes)
+except ValueError as e:
+    st.error(f"❌ Errore elaborazione: {e}")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Errore imprevisto: {e}")
+    st.stop()
+
 anni_disponibili = risultati["anni"]
 
 if not anni_disponibili:
     st.warning("⚠️ Nessuna operazione trovata nel file.")
     st.stop()
+
+
+# ============================================================
+# Sezione alias: vendite orfane (solo per anni ≥ anno_from)
+# ============================================================
+_config_alias = load_config()
+_anno_alias_from = _config_alias.get("isin_alias_check_from_anno", 2025)
+_df_eq_prescan = _prescan_equity(csv_bytes)
+
+_orphans = isin_alias.trova_orphan_sells(
+    _df_eq_prescan,
+    anno_from=_anno_alias_from,
+    alias_map=_alias_data["alias"],
+    ignored=_alias_data["ignored"],
+)
+
+if not _orphans.empty:
+    _n = len(_orphans)
+    with st.expander(
+        f"⚠️ {_n} {'vendita' if _n == 1 else 'vendite'} dal {_anno_alias_from} "
+        f"senza corrispondenza acquisto — espandi per associare",
+        expanded=True,
+    ):
+        st.info(
+            f"Le seguenti vendite (anno ≥ **{_anno_alias_from}**) hanno un ISIN che non "
+            f"compare tra gli acquisti in storico. Potrebbe trattarsi di un cambio ISIN "
+            f"a seguito di un'operazione societaria (fusione, scissione, cambio nome). "
+            f"Associa ogni vendita all'acquisto corrispondente, oppure ignorala. "
+            f"Le associazioni vengono salvate permanentemente in `data/isin_alias.json`."
+        )
+
+        with st.form("orphan_alias_form"):
+            _choices: dict[str, str] = {}   # sell_isin → buy_isin | "IGNORE"
+
+            for _, _orphan in _orphans.iterrows():
+                _sell_isin   = str(_orphan["Isin"])
+                _sell_title  = str(_orphan["Titolo"])
+                _data_prima  = _orphan["Data valuta"].strftime("%d/%m/%Y")
+
+                col_a, col_b = st.columns([2, 3])
+                col_a.markdown(f"**`{_sell_isin}`**")
+                col_b.markdown(f"*{_sell_title}* — prima vendita: {_data_prima}")
+
+                _suggestions = isin_alias.suggerisci_alias(
+                    _sell_isin, _sell_title, _df_eq_prescan
+                )
+
+                if not _suggestions:
+                    st.caption(
+                        "Nessun titolo simile trovato negli acquisti. "
+                        "Sarà ignorata automaticamente."
+                    )
+                    _choices[_sell_isin] = "IGNORE"
+                else:
+                    _opt_labels = ["— Ignora (nessuna corrispondenza) —"] + [
+                        f"{s['titolo_acquisto']}  [{s['isin_acquisto']}]"
+                        f"  — {s['score'] * 100:.0f}% simile"
+                        for s in _suggestions
+                    ]
+                    _sel = st.radio(
+                        "Associa a:",
+                        options=list(range(len(_opt_labels))),
+                        format_func=lambda i, opts=_opt_labels: opts[i],
+                        key=f"alias_sel_{_sell_isin}",
+                        index=1,          # default: primo suggerimento
+                        horizontal=True,
+                    )
+                    _choices[_sell_isin] = (
+                        "IGNORE" if _sel == 0
+                        else _suggestions[_sel - 1]["isin_acquisto"]
+                    )
+
+                st.divider()
+
+            if st.form_submit_button("💾 Salva associazioni", type="primary"):
+                _new_alias   = dict(_alias_data["alias"])
+                _new_ignored = list(_alias_data["ignored"])
+                for _s_isin, _choice in _choices.items():
+                    if _choice == "IGNORE":
+                        if _s_isin not in _new_ignored:
+                            _new_ignored.append(_s_isin)
+                    else:
+                        _new_alias[_s_isin] = _choice
+                isin_alias.save_alias_map(_new_alias, _new_ignored)
+                st.rerun()
 
 
 # ============================================================

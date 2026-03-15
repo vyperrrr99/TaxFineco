@@ -39,3 +39,8 @@ operazioni_cfd:
 
 # Soglia numerica per considerare una quantità "zero" (floating point safety)
 epsilon: 1.0e-6
+
+# Anno a partire dal quale verificare le vendite senza corrispondenza acquisto.
+# Operazioni precedenti a questo anno non vengono controllate (lo storico pre-2025
+# è considerato completo e già riconciliato).
+isin_alias_check_from_anno: 2025
