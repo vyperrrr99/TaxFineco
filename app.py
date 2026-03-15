@@ -163,6 +163,28 @@ def elabora_tutto(csv_bytes: bytes) -> dict:
     anni_cfd = engine_cfd.anni_disponibili()
     tutti_anni = sorted(set(anni_eq) | set(anni_cfd))
 
+    # --- Commissioni (solo nel nuovo formato Fineco) ---
+    # Rilevate dinamicamente: qualsiasi colonna con "commissioni", "commissione" o "spese"
+    col_comm = [
+        c for c in df.columns
+        if any(kw in c.lower() for kw in ["commissioni", "commissione", "spese"])
+    ]
+    if col_comm:
+        for c in col_comm:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+        df_comm = df.copy()
+        df_comm["Anno"] = df_comm["Data valuta"].dt.year
+        df_comm_yearly = (
+            df_comm.groupby("Anno")[col_comm]
+            .sum()
+            .reset_index()
+        )
+        df_comm_yearly["Totale commissioni"] = df_comm_yearly[col_comm].sum(axis=1).round(2)
+        for c in col_comm:
+            df_comm_yearly[c] = df_comm_yearly[c].round(2)
+    else:
+        df_comm_yearly = pd.DataFrame()
+
     return {
         "df_equity_all": engine_eq.risultati_dataframe(),
         "df_cfd_all": engine_cfd.risultati_dataframe(),
@@ -173,6 +195,8 @@ def elabora_tutto(csv_bytes: bytes) -> dict:
         "posizioni_cfd_aperte": engine_cfd.posizioni_aperte(),
         "warnings_eq": engine_eq.warnings,
         "info_eq": engine_eq.info_log,
+        "df_commissioni_yearly": df_comm_yearly,
+        "col_commissioni": col_comm,
     }
 
 
@@ -336,6 +360,32 @@ with tab1:
     with col4:
         st.metric("Imposta 26% (RT26)", f"{rt['rt26_imposta']:,.2f} €",
                   help="Calcolata sull'imponibile netto RT25")
+
+    # ----------------------------------------------------------
+    # Commissioni (solo se presenti nel file caricato)
+    # ----------------------------------------------------------
+    df_comm_yearly = risultati["df_commissioni_yearly"]
+    col_comm = risultati["col_commissioni"]
+
+    if not df_comm_yearly.empty:
+        df_comm_anno = df_comm_yearly[df_comm_yearly["Anno"] == anno_sel]
+        if not df_comm_anno.empty:
+            totale_comm = df_comm_anno["Totale commissioni"].values[0]
+            with st.expander(
+                f"💳 Commissioni e spese pagate nel {anno_sel} — totale: **{totale_comm:,.2f} €**",
+                expanded=False,
+            ):
+                st.caption(
+                    "ℹ️ Le commissioni **non sono deducibili** ai fini del calcolo delle "
+                    "plusvalenze/minusvalenze per la tassazione italiana sui capital gain (Quadro RT)."
+                )
+                comm_cols_display = st.columns(min(len(col_comm), 3))
+                col_idx = 0
+                for c in col_comm:
+                    val = df_comm_anno[c].values[0]
+                    if val != 0.0:
+                        comm_cols_display[col_idx % len(comm_cols_display)].metric(c, f"{val:,.2f} €")
+                        col_idx += 1
 
     # ----------------------------------------------------------
     # Quadro RT
