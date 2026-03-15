@@ -138,7 +138,11 @@ def processa_conto(df_conto: pd.DataFrame, descrizioni_cfd: list) -> pd.DataFram
         else:
             df[col] = 0.0
 
-    df["PnL_riga"] = df["Entrate"] - df["Uscite"]
+    # Entrate = numeri positivi (guadagni), Uscite = numeri negativi (perdite/oneri).
+    # Somma algebrica: Entrate + Uscite = netto corretto.
+    # NON usare Entrate - Uscite: sottrarre un negativo lo renderebbe positivo,
+    # sommando guadagni e perdite invece di nettarli.
+    df["PnL_riga"] = df["Entrate"] + df["Uscite"]
 
     # --- Anno ---
     df["Anno"] = df["Data valuta"].dt.year
