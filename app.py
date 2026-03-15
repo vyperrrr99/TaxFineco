@@ -16,7 +16,6 @@ import streamlit as st
 
 from core.loader import load_config, load_excel, classifica_operazioni
 from core.engine_equity import EngineEquity
-from core.engine_cfd import EngineCFD
 from core.report import calcola_quadro_rt, esporta_excel
 from core.store import load_storico, save_storico, merge_storico, STORICO_PATH
 
@@ -155,13 +154,13 @@ def elabora_tutto(csv_bytes: bytes) -> dict:
     engine_eq = EngineEquity()
     engine_eq.processa(dataset["equity"])
 
-    engine_cfd = EngineCFD()
-    if not dataset["cfd"].empty:
-        engine_cfd.processa(dataset["cfd"])
-
+    # CFD/Futures esclusi dal calcolo fiscale.
+    # Il file Fineco riporta il Controvalore del contratto (già in EUR con
+    # moltiplicatore e cambio), ma per i futures serve il mark-to-market
+    # giornaliero (margini) che non è disponibile nell'export standard.
+    # Il PnL futures viene quindi impostato a 0 nel Quadro RT.
     anni_eq = engine_eq.anni_disponibili()
-    anni_cfd = engine_cfd.anni_disponibili()
-    tutti_anni = sorted(set(anni_eq) | set(anni_cfd))
+    tutti_anni = sorted(set(anni_eq))
 
     # --- Commissioni (solo nel nuovo formato Fineco) ---
     # Rilevate dinamicamente: qualsiasi colonna con "commissioni", "commissione" o "spese"
@@ -187,12 +186,12 @@ def elabora_tutto(csv_bytes: bytes) -> dict:
 
     return {
         "df_equity_all": engine_eq.risultati_dataframe(),
-        "df_cfd_all": engine_cfd.risultati_dataframe(),
+        "df_cfd_all": pd.DataFrame(),          # CFD esclusi — vedi commento sopra
         "anni": tutti_anni,
         "anni_eq": anni_eq,
-        "anni_cfd": anni_cfd,
+        "anni_cfd": [],
         "portafoglio": engine_eq.stato_portafoglio(),
-        "posizioni_cfd_aperte": engine_cfd.posizioni_aperte(),
+        "posizioni_cfd_aperte": pd.DataFrame(),
         "warnings_eq": engine_eq.warnings,
         "info_eq": engine_eq.info_log,
         "df_commissioni_yearly": df_comm_yearly,
@@ -290,24 +289,19 @@ def dati_per_anno(anno: int, metodo: str) -> dict:
 
 
 def dati_storico(metodo: str) -> pd.DataFrame:
-    """Costruisce DataFrame storico per tutti gli anni."""
+    """Costruisce DataFrame storico per tutti gli anni (solo equity, CFD esclusi)."""
     df_eq_all = risultati["df_equity_all"]
-    df_cfd_all = risultati["df_cfd_all"]
     righe = []
     for anno in anni_disponibili:
         df_eq = df_eq_all[df_eq_all["Anno"] == anno] if not df_eq_all.empty else pd.DataFrame()
-        df_cfd = df_cfd_all[df_cfd_all["Anno"] == anno] if not df_cfd_all.empty else pd.DataFrame()
         pm_eq = df_eq[f"Plus/Minus (€) {metodo}"].sum() if not df_eq.empty else 0.0
-        pm_cfd = df_cfd["PnL (€)"].sum() if not df_cfd.empty else 0.0
         righe.append({
             "Anno": anno,
             "Plus/Minus Equity": round(pm_eq, 2),
-            "PnL CFD": round(pm_cfd, 2),
-            "Totale": round(pm_eq + pm_cfd, 2),
         })
     df = pd.DataFrame(righe)
     if not df.empty:
-        df["Totale Cumulato"] = df["Totale"].cumsum().round(2)
+        df["Cumulato"] = df["Plus/Minus Equity"].cumsum().round(2)
     return df
 
 
@@ -352,11 +346,13 @@ with tab1:
         st.metric("Plus/Minus Equity", f"{plus_minus_equity:+,.2f} €",
                   help=f"Metodo {metodo}")
     with col2:
-        st.metric("PnL CFD", f"{plus_minus_cfd:+,.2f} €",
-                  help="PnL netto su CFD/Futures")
+        st.metric("Futures / CFD", "esclusi",
+                  help="Il calcolo futures è escluso dal Quadro RT: "
+                       "il file Fineco non contiene i margini giornalieri "
+                       "necessari per determinare il PnL corretto.")
     with col3:
         st.metric("Totale anno (RT23)", f"{plus_minus_totale:+,.2f} €",
-                  help="Somma equity + CFD")
+                  help="Solo equity (CFD esclusi)")
     with col4:
         st.metric("Imposta 26% (RT26)", f"{rt['rt26_imposta']:,.2f} €",
                   help="Calcolata sull'imponibile netto RT25")
@@ -406,9 +402,9 @@ with tab1:
 
         with col_rt2:
             st.markdown("**Totale anno**")
+            st.caption("⚠️ Futures/CFD: esclusi (dati Fineco non sufficienti)")
             for k, v in {
-                "PnL CFD netto": f"{rt['pnl_cfd']:+,.2f} €",
-                "RT23 — Plus/Minus anno": f"{rt['rt23_plus_minus_anno']:+,.2f} €",
+                "RT23 — Plus/Minus anno (solo equity)": f"{rt['rt23_plus_minus_anno']:+,.2f} €",
                 "RT24 — Minus pregresse": f"{rt['rt24_minus_pregresse']:,.2f} €",
                 "RT25 — Imponibile": f"{rt['rt25_imponibile']:,.2f} €",
             }.items():
@@ -508,35 +504,29 @@ with tab1:
             st.caption(f"{len(df_show)} operazioni mostrate")
 
     # ----------------------------------------------------------
-    # Tabella CFD
+    # Tabella CFD (esclusa dal calcolo)
     # ----------------------------------------------------------
-    with st.expander(f"📉 Operazioni CFD / Futures {anno_sel}", expanded=False):
-        if df_cfd.empty:
-            st.info("Nessuna operazione CFD in questo anno.")
-        else:
-            st.dataframe(df_cfd, use_container_width=True, hide_index=True)
-            st.caption(f"{len(df_cfd)} chiusure CFD")
+    with st.expander(f"📉 Operazioni CFD / Futures {anno_sel} — escluse dal calcolo", expanded=False):
+        st.warning(
+            "**Futures e CFD sono esclusi dal calcolo del Quadro RT.**\n\n"
+            "Il file di movimentazione Fineco riporta il Controvalore nozionale "
+            "del contratto, ma per calcolare correttamente il PnL dei futures "
+            "servono i margini giornalieri (mark-to-market) che non sono presenti "
+            "nell'export standard. Il calcolo automatico produrrebbe valori errati.\n\n"
+            "Consulta il **Rendiconto plusvalenze/minusvalenze** scaricabile "
+            "direttamente dall'area personale Fineco per i valori corretti dei futures."
+        )
 
     # ----------------------------------------------------------
     # Portafoglio residuo e posizioni aperte
     # ----------------------------------------------------------
     portafoglio = risultati["portafoglio"]
-    pos_aperte_cfd = risultati["posizioni_cfd_aperte"]
 
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        with st.expander("💼 Portafoglio equity residuo"):
-            if portafoglio.empty:
-                st.info("Nessuna posizione equity aperta.")
-            else:
-                st.dataframe(portafoglio, use_container_width=True, hide_index=True)
-
-    with col_p2:
-        with st.expander(f"⚠️ {'%d posizioni' % len(pos_aperte_cfd) if not pos_aperte_cfd.empty else 'Nessuna posizione'} CFD aperte"):
-            if pos_aperte_cfd.empty:
-                st.info("Nessuna posizione CFD aperta.")
-            else:
-                st.dataframe(pos_aperte_cfd, use_container_width=True, hide_index=True)
+    with st.expander("💼 Portafoglio equity residuo"):
+        if portafoglio.empty:
+            st.info("Nessuna posizione equity aperta.")
+        else:
+            st.dataframe(portafoglio, use_container_width=True, hide_index=True)
 
     # ----------------------------------------------------------
     # Warnings
@@ -606,46 +596,37 @@ with tab2:
         (df_storico["Anno"] <= anno_range[1])
     ].copy()
 
-    df_storico_filt["Totale Cumulato"] = df_storico_filt["Totale"].cumsum().round(2)
+    df_storico_filt["Cumulato"] = df_storico_filt["Plus/Minus Equity"].cumsum().round(2)
 
     # ----------------------------------------------------------
     # KPI riepilogo range
     # ----------------------------------------------------------
-    totale_range = df_storico_filt["Totale"].sum()
     eq_range = df_storico_filt["Plus/Minus Equity"].sum()
-    cfd_range = df_storico_filt["PnL CFD"].sum()
     n_anni = len(df_storico_filt)
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Totale periodo", f"{totale_range:+,.2f} €")
-    k2.metric("Equity periodo", f"{eq_range:+,.2f} €")
-    k3.metric("CFD periodo", f"{cfd_range:+,.2f} €")
-    k4.metric("Anni nel range", str(n_anni))
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Equity periodo", f"{eq_range:+,.2f} €")
+    k2.metric("Anni nel range", str(n_anni))
+    k3.metric("Futures / CFD", "esclusi", help="Esclusi dal calcolo — vedi sezione futures in Tab 1")
 
     st.divider()
 
     # ----------------------------------------------------------
     # Bar chart: plus/minus annuale (equity + CFD)
     # ----------------------------------------------------------
-    df_melt = df_storico_filt.melt(
-        id_vars=["Anno"],
-        value_vars=["Plus/Minus Equity", "PnL CFD"],
-        var_name="Tipo",
-        value_name="Valore",
-    )
     fig_bar = px.bar(
-        df_melt,
+        df_storico_filt,
         x="Anno",
-        y="Valore",
-        color="Tipo",
-        barmode="group",
-        color_discrete_map={"Plus/Minus Equity": "#636EFA", "PnL CFD": "#EF553B"},
-        labels={"Valore": "Plus/Minus (€)", "Anno": "Anno"},
-        title=f"Plus/Minus annuale Equity vs CFD — {metodo}",
+        y="Plus/Minus Equity",
+        color="Plus/Minus Equity",
+        color_continuous_scale=["#d62728", "#aec7e8", "#2ca02c"],
+        color_continuous_midpoint=0,
+        labels={"Plus/Minus Equity": "Plus/Minus (€)", "Anno": "Anno"},
+        title=f"Plus/Minus annuale Equity — {metodo} (Futures/CFD esclusi)",
         template="plotly_white",
     )
     fig_bar.add_hline(y=0, line_width=1, line_color="gray")
-    fig_bar.update_layout(legend_title_text="", margin=dict(l=0, r=20, t=40, b=20))
+    fig_bar.update_layout(coloraxis_showscale=False, margin=dict(l=0, r=20, t=40, b=20))
     st.plotly_chart(fig_bar, use_container_width=True)
 
     # ----------------------------------------------------------
@@ -654,7 +635,7 @@ with tab2:
     fig_line = go.Figure()
     fig_line.add_trace(go.Scatter(
         x=df_storico_filt["Anno"],
-        y=df_storico_filt["Totale Cumulato"],
+        y=df_storico_filt["Cumulato"],
         mode="lines+markers",
         name="Cumulato",
         line=dict(color="#00CC96", width=2),
@@ -664,7 +645,7 @@ with tab2:
     ))
     fig_line.add_hline(y=0, line_width=1, line_color="gray", line_dash="dot")
     fig_line.update_layout(
-        title="Plus/Minus cumulato nel periodo",
+        title="Plus/Minus cumulato nel periodo (solo Equity)",
         xaxis_title="Anno",
         yaxis_title="Cumulato (€)",
         template="plotly_white",
@@ -676,13 +657,11 @@ with tab2:
     # ----------------------------------------------------------
     # Tabella riepilogo per anno
     # ----------------------------------------------------------
-    st.subheader("📋 Riepilogo per anno")
+    st.subheader("📋 Riepilogo per anno (solo Equity)")
     st.dataframe(
         df_storico_filt.rename(columns={
-            "Plus/Minus Equity": f"Equity ({metodo}) (€)",
-            "PnL CFD": "PnL CFD (€)",
-            "Totale": "Totale (€)",
-            "Totale Cumulato": "Cumulato (€)",
+            "Plus/Minus Equity": f"Plus/Minus Equity ({metodo}) (€)",
+            "Cumulato": "Cumulato (€)",
         }),
         use_container_width=True,
         hide_index=True,
