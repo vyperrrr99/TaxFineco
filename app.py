@@ -6,16 +6,19 @@ Avvio:
     streamlit run app.py
 """
 
+import hashlib
 import io
-import streamlit as st
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 
 from core.loader import load_config, load_excel, classifica_operazioni
 from core.engine_equity import EngineEquity
 from core.engine_cfd import EngineCFD
 from core.report import calcola_quadro_rt, esporta_excel
+from core.store import load_storico, save_storico, merge_storico, STORICO_PATH
 
 # ============================================================
 # Config Streamlit
@@ -28,7 +31,7 @@ st.set_page_config(
 )
 
 # ============================================================
-# Sidebar — Parametri fissi
+# Sidebar
 # ============================================================
 with st.sidebar:
     st.title("⚙️ Parametri")
@@ -47,9 +50,82 @@ with st.sidebar:
         help="Inserisci 0 se non hai minusvalenze da riportare dagli anni precedenti.",
     )
 
+    # ----------------------------------------------------------
+    # Sezione: Gestione dati storici
+    # ----------------------------------------------------------
+    st.divider()
+    st.markdown("### 📂 Gestione dati")
+
+    storico_sidebar = load_storico()
+
+    if not storico_sidebar.empty:
+        n_righe = len(storico_sidebar)
+        data_min = storico_sidebar["Data valuta"].min().strftime("%d/%m/%Y")
+        data_max = storico_sidebar["Data valuta"].max().strftime("%d/%m/%Y")
+        st.caption(f"**{n_righe}** righe &nbsp;|&nbsp; {data_min} → {data_max}")
+    else:
+        st.caption("Nessun dato storico salvato.")
+
+    nuovo_file_sidebar = st.file_uploader(
+        "Aggiungi movimentazione",
+        type=["xlsx", "xls"],
+        key="sidebar_uploader",
+        help="Carica un file Excel Fineco per aggiungerlo allo storico permanente.",
+    )
+
+    if nuovo_file_sidebar:
+        file_bytes_sb = nuovo_file_sidebar.read()
+        file_hash_sb = hashlib.md5(file_bytes_sb).hexdigest()
+
+        # Processa solo se è un file nuovo (evita rielaborazione ad ogni rerun)
+        if st.session_state.get("_sb_last_hash") != file_hash_sb:
+            st.session_state["_sb_last_hash"] = file_hash_sb
+            with st.spinner("Elaborazione e merge in corso..."):
+                try:
+                    config = load_config()
+                    df_nuovo = load_excel(file_bytes_sb, config)
+                    storico_curr = load_storico()
+                    result = merge_storico(storico_curr, df_nuovo)
+                    if result["n_nuove"] > 0:
+                        save_storico(result["df"])
+                    st.session_state["_sb_merge_result"] = result
+                except Exception as e:
+                    st.session_state["_sb_merge_result"] = {"error": str(e)}
+            st.rerun()
+
+    if "_sb_merge_result" in st.session_state:
+        mr = st.session_state["_sb_merge_result"]
+        if "error" in mr:
+            st.error(f"Errore: {mr['error']}")
+        elif mr["n_nuove"] > 0:
+            st.success(f"✅ +{mr['n_nuove']} nuove righe aggiunte")
+            if mr["n_duplicate"] > 0:
+                st.caption(f"{mr['n_duplicate']} duplicate scartate")
+        else:
+            st.info(f"ℹ️ Nessuna nuova riga ({mr['n_duplicate']} duplicate scartate)")
+
+    # Pulsante reset storico
+    if not storico_sidebar.empty:
+        st.divider()
+        if st.button("🗑️ Reset storico", use_container_width=True):
+            st.session_state["_confirm_reset"] = True
+
+        if st.session_state.get("_confirm_reset"):
+            st.warning("Eliminare definitivamente lo storico?")
+            c1, c2 = st.columns(2)
+            if c1.button("Sì, elimina", type="primary", use_container_width=True):
+                STORICO_PATH.unlink(missing_ok=True)
+                for key in ["_confirm_reset", "_sb_last_hash", "_sb_merge_result"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
+            if c2.button("Annulla", use_container_width=True):
+                st.session_state.pop("_confirm_reset", None)
+                st.rerun()
+
     st.divider()
     st.caption("Calcolo Tasse Fineco v2.0")
     st.caption("Solo per uso personale — verifica sempre con un commercialista.")
+
 
 # ============================================================
 # Main — Header
@@ -60,55 +136,39 @@ st.markdown(
     "per calcolare plusvalenze, minusvalenze e il riepilogo per il Quadro RT."
 )
 
-# ============================================================
-# Upload file
-# ============================================================
-uploaded_file = st.file_uploader(
-    "Carica il file Excel di movimentazione",
-    type=["xlsx", "xls"],
-    help="Esporta da Fineco: Portafoglio → Movimentazione → Esporta Excel",
-)
-
-if not uploaded_file:
-    st.info("👆 Carica il file Excel per iniziare.")
-    st.stop()
 
 # ============================================================
-# Elaborazione (con cache per evitare ricalcoli)
-# Processa TUTTO il dataset una volta sola → filtro anno a valle
+# Pipeline di elaborazione (cached)
+# La cache è invalidata automaticamente quando il CSV storico cambia
+# (la chiave di cache è csv_bytes, che cambia ad ogni modifica del file).
 # ============================================================
 @st.cache_data(show_spinner="Elaborazione in corso...")
-def elabora_tutto(file_bytes: bytes, metodo: str) -> dict:
-    """Esegue la pipeline completa su tutti gli anni e restituisce i motori serializzati."""
+def elabora_tutto(csv_bytes: bytes) -> dict:
+    """
+    Esegue la pipeline completa sul dataset (passato come CSV bytes).
+    Calcola sia CMP che LIFO — il filtro metodo è applicato a valle.
+    """
     config = load_config()
-    df = load_excel(file_bytes, config)
+    df = pd.read_csv(io.BytesIO(csv_bytes), parse_dates=["Data valuta"])
     dataset = classifica_operazioni(df, config)
 
-    # Equity — processa tutto
     engine_eq = EngineEquity()
     engine_eq.processa(dataset["equity"])
 
-    # CFD — processa tutto
     engine_cfd = EngineCFD()
     if not dataset["cfd"].empty:
         engine_cfd.processa(dataset["cfd"])
 
-    # Anni disponibili (unione equity + CFD)
     anni_eq = engine_eq.anni_disponibili()
     anni_cfd = engine_cfd.anni_disponibili()
     tutti_anni = sorted(set(anni_eq) | set(anni_cfd))
 
     return {
-        # DataFrame completi (tutti gli anni)
         "df_equity_all": engine_eq.risultati_dataframe(),
         "df_cfd_all": engine_cfd.risultati_dataframe(),
-        # Per-anno: costruiamo un dict anni → dati
         "anni": tutti_anni,
         "anni_eq": anni_eq,
         "anni_cfd": anni_cfd,
-        # Funzioni serializzabili: salviamo records e li filtriamo dopo
-        # (Streamlit cache non può serializzare le classi engine, passiamo i df)
-        # DataFrames per il portafoglio e posizioni aperte
         "portafoglio": engine_eq.stato_portafoglio(),
         "posizioni_cfd_aperte": engine_cfd.posizioni_aperte(),
         "warnings_eq": engine_eq.warnings,
@@ -116,21 +176,62 @@ def elabora_tutto(file_bytes: bytes, metodo: str) -> dict:
     }
 
 
-try:
-    file_bytes = uploaded_file.read()
-    risultati = elabora_tutto(file_bytes, metodo)
-except ValueError as e:
-    st.error(f"❌ Errore nel file: {e}")
-    st.stop()
-except Exception as e:
-    st.error(f"❌ Errore imprevisto: {e}")
-    st.stop()
+# ============================================================
+# Determina sorgente dati: storico CSV oppure upload diretto
+# ============================================================
+storico_main = load_storico()
+
+if not storico_main.empty:
+    # --- Flusso primario: storico persistente ---
+    with open(STORICO_PATH, "rb") as _f:
+        csv_bytes = _f.read()
+
+    try:
+        risultati = elabora_tutto(csv_bytes)
+    except ValueError as e:
+        st.error(f"❌ Errore nello storico: {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Errore imprevisto: {e}")
+        st.stop()
+
+else:
+    # --- Flusso di fallback: caricamento diretto senza salvataggio ---
+    st.info(
+        "ℹ️ Nessun dato storico. Carica un file qui sotto per un'analisi immediata, "
+        "oppure usa **📂 Gestione dati** nella sidebar per salvare i dati in modo permanente."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Carica il file Excel di movimentazione",
+        type=["xlsx", "xls"],
+        help="Esporta da Fineco: Portafoglio → Movimentazione → Esporta Excel",
+    )
+
+    if not uploaded_file:
+        st.stop()
+
+    try:
+        file_bytes = uploaded_file.read()
+        config = load_config()
+        df_direct = load_excel(file_bytes, config)
+        # Converti in CSV bytes per uniformità con il flusso storico
+        csv_bytes = df_direct.to_csv(index=False).encode("utf-8")
+        risultati = elabora_tutto(csv_bytes)
+    except ValueError as e:
+        st.error(f"❌ Errore nel file: {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Errore imprevisto: {e}")
+        st.stop()
+
 
 anni_disponibili = risultati["anni"]
 
 if not anni_disponibili:
     st.warning("⚠️ Nessuna operazione trovata nel file.")
     st.stop()
+
 
 # ============================================================
 # Helper: calcola dati per un anno specifico
@@ -140,11 +241,9 @@ def dati_per_anno(anno: int, metodo: str) -> dict:
     df_eq_all = risultati["df_equity_all"]
     df_cfd_all = risultati["df_cfd_all"]
 
-    # Filtro anno
     df_eq = df_eq_all[df_eq_all["Anno"] == anno].copy() if not df_eq_all.empty else pd.DataFrame()
     df_cfd = df_cfd_all[df_cfd_all["Anno"] == anno].copy() if not df_cfd_all.empty else pd.DataFrame()
 
-    col_pm = f"Plus/Minus (€) {metodo}"
     totali_eq = {
         "corrispettivi_eur": df_eq["Controvalore Vendita (€)"].sum() if not df_eq.empty else 0.0,
         "costi_eur_cmp": df_eq["Costo Carico (€) CMP"].sum() if not df_eq.empty else 0.0,
@@ -199,11 +298,10 @@ tab1, tab2 = st.tabs(["📋 Anno Selezionato", "📈 Storico Multi-Anno"])
 # ============================================================
 with tab1:
 
-    # Dropdown anno (basato sui dati reali del file)
     anno_default = max(anni_disponibili)
     anno_sel = st.selectbox(
         "📅 Anno di imposta",
-        options=anni_disponibili[::-1],  # più recenti prima
+        options=anni_disponibili[::-1],
         index=0,
         key="anno_tab1",
     )
@@ -283,7 +381,6 @@ with tab1:
     if df_eq.empty:
         st.info(f"Nessuna vendita equity nell'anno {anno_sel}.")
     else:
-        # Aggregazione per ISIN/Titolo
         agg = (
             df_eq.groupby(["ISIN", "Titolo"], as_index=False)
             .agg(
@@ -298,7 +395,6 @@ with tab1:
         agg["Costo"] = agg["Costo"].round(2)
         agg["PlusMinus"] = agg["PlusMinus"].round(2)
 
-        # Bar chart per titolo
         fig_titolo = px.bar(
             agg,
             x="PlusMinus",
@@ -316,7 +412,6 @@ with tab1:
         fig_titolo.add_vline(x=0, line_width=1, line_color="gray")
         st.plotly_chart(fig_titolo, use_container_width=True)
 
-        # Tabella aggregata
         st.dataframe(
             agg.rename(columns={
                 "Corrispettivi": "Corrispettivi (€)",
@@ -337,7 +432,6 @@ with tab1:
         if df_eq.empty:
             st.info("Nessuna operazione.")
         else:
-            # Filtri rapidi
             col_f1, col_f2 = st.columns([2, 1])
             with col_f1:
                 isin_filter = st.multiselect(
@@ -443,7 +537,6 @@ with tab2:
         st.info("Nessun dato storico disponibile.")
         st.stop()
 
-    # Range selezione anni
     anni_min = int(df_storico["Anno"].min())
     anni_max = int(df_storico["Anno"].max())
 
@@ -463,7 +556,6 @@ with tab2:
         (df_storico["Anno"] <= anno_range[1])
     ].copy()
 
-    # Ricalcola cumulato sul range filtrato
     df_storico_filt["Totale Cumulato"] = df_storico_filt["Totale"].cumsum().round(2)
 
     # ----------------------------------------------------------

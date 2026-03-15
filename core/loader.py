@@ -22,6 +22,40 @@ def load_config(config_path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def _detect_header_row(source: Union[str, Path, bytes, io.BytesIO]) -> int:
+    """
+    Rileva automaticamente la riga degli header nel file Excel Fineco.
+
+    Cerca la prima riga (tra le prime 10) che contiene la stringa "Data valuta".
+    Supporta:
+      - Formato A: header a riga 0  (Movimentazione storica standard)
+      - Formato B: header a riga 5  (nuovo export con meta-info Fineco in testa)
+
+    Returns:
+        Indice 0-based della riga da usare come header (da passare a skiprows).
+        Default 0 se non trovato.
+    """
+    try:
+        if isinstance(source, (str, Path)):
+            raw = pd.read_excel(source, header=None, nrows=10)
+        elif isinstance(source, bytes):
+            raw = pd.read_excel(io.BytesIO(source), header=None, nrows=10)
+        elif isinstance(source, io.BytesIO):
+            pos = source.tell()
+            raw = pd.read_excel(source, header=None, nrows=10)
+            source.seek(pos)
+        else:
+            return 0
+    except Exception:
+        return 0
+
+    for i, row in raw.iterrows():
+        if row.astype(str).str.contains("Data valuta", case=False, na=False).any():
+            return int(i)
+
+    return 0
+
+
 def load_excel(
     source: Union[str, Path, bytes, io.BytesIO],
     config: dict,
@@ -40,13 +74,17 @@ def load_excel(
         ValueError: se mancano colonne obbligatorie.
         Exception: se il file non è leggibile.
     """
+    # --- Rilevamento formato (Formato A: header riga 0, Formato B: header riga 5) ---
+    header_row = _detect_header_row(source)
+
     # --- Lettura grezza ---
     if isinstance(source, (str, Path)):
-        raw_df = pd.read_excel(source)
+        raw_df = pd.read_excel(source, skiprows=header_row)
     elif isinstance(source, bytes):
-        raw_df = pd.read_excel(io.BytesIO(source))
+        raw_df = pd.read_excel(io.BytesIO(source), skiprows=header_row)
     elif isinstance(source, io.BytesIO):
-        raw_df = pd.read_excel(source)
+        source.seek(0)
+        raw_df = pd.read_excel(source, skiprows=header_row)
     else:
         raise TypeError(f"Tipo sorgente non supportato: {type(source)}")
 
