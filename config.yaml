@@ -1,0 +1,42 @@
+# ============================================================
+# Calcolo Tasse Fineco — Configurazione
+# ============================================================
+
+# Anno di imposta da calcolare (modificabile senza toccare il codice)
+anno_imposta: 2025
+
+# Cartella dove salvare i file di output
+output_folder: "output"
+
+# Colonne attese nel file Excel di Fineco
+# Modifica qui se Fineco cambia i nomi delle colonne
+colonne_attese:
+  - "Data valuta"
+  - "Descrizione"
+  - "Titolo"
+  - "Isin"
+  - "Segno"
+  - "Quantita"
+  - "Divisa"
+  - "Prezzo"
+  - "Cambio"
+  - "Controvalore"
+  - "QTY"
+  - "Val Unit €"
+
+# Tipi di operazione riconosciuti
+# Equity: operazioni su azioni, ETF, bond, ETP
+operazioni_equity:
+  - "Compravendita titoli"
+  - "Rimborso"
+  - "Aumento capitale"
+
+# CFD: operazioni su derivati (futures, CFD indici, forex, commodities)
+# Aggiungi qui le stringhe esatte che compaiono nella colonna "Descrizione" del tuo Excel
+operazioni_cfd:
+  - "Compravendita CFD"
+  - "CFD"
+  - "Futures"
+
+# Soglia numerica per considerare una quantità "zero" (floating point safety)
+epsilon: 1.0e-6
