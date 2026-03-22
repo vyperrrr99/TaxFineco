@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"C:/App AI/Fineco PL & Tax Calculator/core/\")",
+      "Bash(ls -la \"C:/App AI/Fineco PL & Tax Calculator/output/\")",
+      "Bash(ls -la \"C:/App AI/Fineco PL & Tax Calculator/Dati usati per creazione/\")",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import sys; [print\\(l.rstrip\\(\\)\\) for l in sys.stdin]\")",
+      "Bash(python debug_check.py)",
+      "Bash(pip install pytest -q)",
+      "Bash(python -m pytest tests/test_store.py -v)",
+      "Bash(python -m pytest tests/test_store.py -v --tb=short)",
+      "Bash(gh pr list --state all)",
+      "Bash(python -:*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''Sintassi OK''\\)\")",
+      "Bash(pip install pdfplumber openpyxl -q)",
+      "Bash(python \"C:/Users/vperr/Downloads/extract_fattura.py\")",
+      "Bash(python extract_fattura.py)"
+    ]
+  }
+}
