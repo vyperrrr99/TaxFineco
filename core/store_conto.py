@@ -30,7 +30,8 @@ def _normalizza_chiavi_conto(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).round(4)
     if "Descrizione Completa" in df.columns:
-        df["Descrizione Completa"] = df["Descrizione Completa"].astype(str).str.strip()
+        df["Descrizione Completa"] = df["Descrizione Completa"].fillna("").astype(str).str.strip()
+        df.loc[df["Descrizione Completa"].str.lower() == "nan", "Descrizione Completa"] = ""
     return df
 
 

@@ -92,16 +92,11 @@ def load_excel(
     else:
         raise TypeError(f"Tipo sorgente non supportato: {type(source)}")
 
-    # --- Colonna data: usa "Operazione" (data trade) se presente,
-    #     altrimenti "Data valuta" (data regolamento) come fallback.
-    #     Il rename avviene prima della validazione così colonne_attese
-    #     continua a richiedere "Data valuta" senza dover modificare config.
-    if "Operazione" in raw_df.columns:
-        # Il file nuovo ha già una colonna "Data valuta" (regolamento):
-        # la rimuoviamo prima di rinominare "Operazione" (trade date) al suo posto.
-        if "Data valuta" in raw_df.columns:
-            raw_df = raw_df.drop(columns=["Data valuta"])
-        raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})
+    # --- Colonna data: usa SEMPRE la "Data valuta" (data regolamento)
+    #     poiché presente su tutti i file esportati storici. Fallback su Operazione.
+    if "Data valuta" not in raw_df.columns:
+        if "Operazione" in raw_df.columns:
+            raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})
 
     # --- Validazione colonne ---
     colonne_attese = config.get("colonne_attese", [])
@@ -153,10 +148,12 @@ def load_excel(
     # Pulisci whitespace nelle colonne stringa
     for col in ["Descrizione", "Titolo", "Isin", "Segno", "Divisa"]:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
+            df[col] = df[col].fillna("").astype(str).str.strip()
+            df.loc[df[col].str.lower() == "nan", col] = ""
 
     # Normalizza Segno: a volte Fineco usa minuscolo o spazi
-    df["Segno"] = df["Segno"].str.upper()
+    if "Segno" in df.columns:
+        df["Segno"] = df["Segno"].str.upper()
 
     # --- Ordinamento cronologico (fondamentale per LIFO) ---
     df.sort_values(by="Data valuta", ascending=True, inplace=True)
@@ -243,17 +240,14 @@ def load_excel_conto(
     # Il file Fineco conto usa Data_Operazione, Data_Valuta, Descrizione_Completa
     raw_df.columns = [str(c).replace("_", " ").strip() for c in raw_df.columns]
 
-    # --- Colonna data: usa "Data Operazione" (trade date) → "Data valuta" ---
-    if "Data Operazione" in raw_df.columns:
-        if "Data Valuta" in raw_df.columns:
-            raw_df = raw_df.drop(columns=["Data Valuta"])
-        raw_df = raw_df.rename(columns={"Data Operazione": "Data valuta"})
-    elif "Data Valuta" in raw_df.columns:
+    # --- Colonna data: usa SEMPRE la data valuta (regolamento) ---
+    if "Data Valuta" in raw_df.columns:
         raw_df = raw_df.rename(columns={"Data Valuta": "Data valuta"})
-    elif "Operazione" in raw_df.columns:
-        if "Data valuta" in raw_df.columns:
-            raw_df = raw_df.drop(columns=["Data valuta"])
-        raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})
+    elif "Data valuta" not in raw_df.columns:
+        if "Data Operazione" in raw_df.columns:
+            raw_df = raw_df.rename(columns={"Data Operazione": "Data valuta"})
+        elif "Operazione" in raw_df.columns:
+            raw_df = raw_df.rename(columns={"Operazione": "Data valuta"})
 
     # --- Validazione colonne ---
     colonne_attese = config.get("colonne_conto_attese", [])
@@ -284,7 +278,8 @@ def load_excel_conto(
 
     for col in ["Descrizione", "Descrizione Completa"]:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
+            df[col] = df[col].fillna("").astype(str).str.strip()
+            df.loc[df[col].str.lower() == "nan", col] = ""
 
     # --- Ordinamento cronologico ---
     df.sort_values(by="Data valuta", ascending=True, inplace=True)

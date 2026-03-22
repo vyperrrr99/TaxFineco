@@ -170,10 +170,31 @@ class EngineEquity:
 
     def processa(self, df: pd.DataFrame) -> "EngineEquity":
         """
-        Elabora il DataFrame riga per riga in ordine cronologico.
+        Elabora il DataFrame riga per riga in ordine cronologico,
+        garantendo che a parità di data gli acquisti precedano le vendite.
         Modifica lo stato interno accumulando records e warnings.
         """
-        for _, row in df.iterrows():
+        if df.empty:
+            return self
+
+        def _calc_prio(r: pd.Series) -> int:
+            desc = str(r.get("Descrizione", "")).lower()
+            segno = str(r.get("Segno", "")).upper()
+            if "aumento capitale" in desc:
+                return 0
+            if segno == "A" or "acquisto" in desc:
+                return 1
+            if segno == "V" or "rimborso" in desc or "vendita" in desc:
+                return 2
+            return 3
+
+        df_sorted = df.copy()
+        df_sorted["_sort_prio"] = df_sorted.apply(_calc_prio, axis=1)
+        # Assicuriamoci che Data valuta non sia NaT e ordiniamo per Data valuta e priorità
+        df_sorted.sort_values(by=["Data valuta", "_sort_prio"], ascending=[True, True], inplace=True)
+        df_sorted.drop(columns=["_sort_prio"], inplace=True)
+
+        for _, row in df_sorted.iterrows():
             try:
                 self._processa_riga(row)
             except Exception as e:

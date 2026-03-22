@@ -119,9 +119,12 @@ def _normalizza_chiavi(df: pd.DataFrame) -> pd.DataFrame:
     if "Quantita" in df.columns:
         df["Quantita"] = pd.to_numeric(df["Quantita"], errors="coerce").round(6)
     if "Segno" in df.columns:
-        df["Segno"] = df["Segno"].astype(str).str.strip().str.upper()
+        df["Segno"] = df["Segno"].fillna("").astype(str).str.strip().str.upper()
+        df.loc[df["Segno"] == "NAN", "Segno"] = ""
     if "Descrizione" in df.columns:
-        df["Descrizione"] = df["Descrizione"].astype(str).str.strip()
+        df["Descrizione"] = df["Descrizione"].fillna("").astype(str).str.strip()
+        df.loc[df["Descrizione"].str.lower() == "nan", "Descrizione"] = ""
     if "Isin" in df.columns:
-        df["Isin"] = df["Isin"].astype(str).str.strip()
+        df["Isin"] = df["Isin"].fillna("").astype(str).str.strip()
+        df.loc[df["Isin"].str.lower() == "nan", "Isin"] = ""
     return df
