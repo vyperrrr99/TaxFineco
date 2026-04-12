@@ -151,9 +151,10 @@ class EngineEquity:
     e accumula i record di plusvalenza/minusvalenza.
     """
 
-    def __init__(self, anno_imposta: int = None, epsilon: float = 1e-6):
+    def __init__(self, anno_imposta: int = None, epsilon: float = 1e-6, omaggi_confermati: list[dict] = None):
         self.anno_imposta = anno_imposta  # used only for backward-compat / CLI display
         self.epsilon = epsilon
+        self.omaggi_confermati = omaggi_confermati if omaggi_confermati is not None else []
 
         # Stato interno del portafoglio
         self._portfolio_cmp: dict[str, PosizioneCMP] = {}
@@ -163,6 +164,7 @@ class EngineEquity:
         self.records: list[RecordPlusvalenza] = []
         self.warnings: list[str] = []
         self.info_log: list[str] = []
+        self.pending_omaggi: list[dict] = []
 
     # ----------------------------------------------------------
     # Entrypoint pubblico
@@ -342,16 +344,56 @@ class EngineEquity:
     ):
         pos_cmp = self._portfolio_cmp.get(isin)
 
-        # Controllo disponibilità
+        # Controllo disponibilità: se manca quantità (es. assegnazione gratuita diritti),
+        # assumiamo costo di carico ZERO per la parte mancante, ma solo se l'utente l'ha approvato
         if pos_cmp is None or pos_cmp.quantita < quantita - self.epsilon:
-            data_str = data.strftime("%d/%m/%Y")
-            qta_disponibile = pos_cmp.quantita if pos_cmp else 0
-            self.warnings.append(
-                f"[{data_str}] {tipo_op} {titolo} ({isin}): "
-                f"quantità richiesta {quantita:.0f}, disponibile {qta_disponibile:.0f}. "
-                f"Operazione saltata (probabile storico incompleto)."
-            )
-            return
+            qta_disp = pos_cmp.quantita if pos_cmp else 0.0
+            qta_mancante = quantita - qta_disp
+            data_str = data.strftime("%Y-%m-%d")
+
+            # Controlla se è un omaggio autorizzato o ignorato
+            from core.omaggi import is_omaggio_confermato, is_omaggio_ignorato
+            
+            if is_omaggio_ignorato(isin, data_str, qta_mancante, self.omaggi_confermati, self.epsilon):
+                self.info_log.append(
+                    f"[{data.strftime('%d/%m/%Y')}] {tipo_op} {titolo} ({isin}): "
+                    f"vendita ignorata/esclusa dal calcolo (scelta dell'utente)."
+                )
+                return
+
+            if is_omaggio_confermato(isin, data_str, qta_mancante, self.omaggi_confermati, self.epsilon):
+                self.warnings.append(
+                    f"[{data.strftime('%d/%m/%Y')}] {tipo_op} {titolo} ({isin}): "
+                    f"quantità richiesta {quantita:.0f}, disponibile {qta_disp:.0f}. "
+                    f"Assunto costo ZERO per le {qta_mancante:.0f} quote mancanti (approvato dall'utente)."
+                )
+                # Inietta le quote mancanti a costo zero nel portafoglio
+                if pos_cmp is None:
+                    pos_cmp = PosizioneCMP()
+                    self._portfolio_cmp[isin] = pos_cmp
+                
+                pos_cmp.quantita += qta_mancante
+                
+                # Per LIFO, i lotti mancanti a costo zero vengono considerati come "appena acquisiti"
+                if isin not in self._portfolio_lifo:
+                    self._portfolio_lifo[isin] = []
+                self._portfolio_lifo[isin].append(
+                    LottoLIFO(qta_mancante, 0.0, 0.0)
+                )
+            else:
+                # Non approvato: aggiungilo a pending_omaggi per farlo richiedere dalla UI
+                # Saltiamo momentaneamente il trade per non registrare risultati errati (la pipeline verrà fermata dalla UI)
+                self.pending_omaggi.append({
+                    "isin": isin,
+                    "titolo": titolo,
+                    "data_vendita": data_str,
+                    "quantita_mancante": qta_mancante,
+                    "quantita_richiesta": quantita,
+                    "quantita_disponibile": qta_disp,
+                    "tipo_op": tipo_op,
+                })
+                # Evito di sbilanciare i lotti o registrare loss errate: ritorno prima di eseguire i calcoli.
+                return
 
         # --- Calcolo LIFO ---
         costo_eur_lifo, costo_orig_lifo, lotti_aggiornati = _calcola_costo_lifo(

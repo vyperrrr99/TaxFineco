@@ -157,14 +157,16 @@ def processa_conto(df_conto: pd.DataFrame, descrizioni_cfd: list) -> pd.DataFram
     df["Tipo"]      = df[col_desc].apply(_classify_type)
 
     # --- Aggregazione ---
-    agg = (
-        df.groupby(["Anno", "Strumento", "Tipo"], as_index=False)["PnL_riga"]
-        .sum()
-        .rename(columns={"PnL_riga": "PnL (€)"})
-    )
-    agg["PnL (€)"] = agg["PnL (€)"].round(2)
+    # Restituiamo il dettaglio per-riga (NON aggregato) in modo da preservare
+    # la colonna Data valuta per i filtri temporali nella UI.
+    # L'aggregazione per Strumento/Tipo avviene a valle in
+    # riepilogo_per_anno_strumento() e totale_pnl_per_anno().
+    df["PnL (€)"] = df["PnL_riga"].round(2)
 
-    return agg.sort_values(["Anno", "Strumento", "Tipo"]).reset_index(drop=True)
+    _keep_cols = ["Data valuta", "Anno", "Strumento", "Tipo", "PnL (€)"]
+    _keep_cols = [c for c in _keep_cols if c in df.columns]
+
+    return df[_keep_cols].sort_values(["Anno", "Data valuta", "Strumento"]).reset_index(drop=True)
 
 
 def riepilogo_per_anno_strumento(df_processed: pd.DataFrame) -> pd.DataFrame:

@@ -17,7 +17,7 @@ STORICO_PATH = Path("data/movimentazione_storico.csv")
 
 # Campi che identificano univocamente una riga di movimentazione.
 # Due righe con tutti questi campi identici sono considerate duplicate.
-CHIAVE_DEDUP = ["Data valuta", "Isin", "Descrizione", "Segno", "Quantita", "Controvalore"]
+CHIAVE_DEDUP_BASE = ["Data valuta", "Isin", "Descrizione", "Segno", "Quantita", "Controvalore"]
 
 
 def load_storico() -> pd.DataFrame:
@@ -73,7 +73,9 @@ def merge_storico(storico: pd.DataFrame, nuovo: pd.DataFrame) -> dict:
         # al caricamento successivo quelle righe verrebbero rimosse come dup
         # causando n_nuove negativo e lo storico che "si restringe".
         n_prima = len(df_nuovo_norm)
-        df_dedup = df_nuovo_norm.drop_duplicates(subset=CHIAVE_DEDUP, keep="first")
+        # Assegna un indice progressivo per le righe identiche all'interno dello stesso file
+        df_nuovo_norm["_dupe_idx"] = df_nuovo_norm.groupby(CHIAVE_DEDUP_BASE).cumcount()
+        df_dedup = df_nuovo_norm.drop_duplicates(subset=CHIAVE_DEDUP_BASE + ["_dupe_idx"], keep="first").drop(columns=["_dupe_idx"])
         n_duplicate = n_prima - len(df_dedup)
         df_sorted = df_dedup.sort_values("Data valuta").reset_index(drop=True)
         return {
@@ -85,17 +87,21 @@ def merge_storico(storico: pd.DataFrame, nuovo: pd.DataFrame) -> dict:
     storico_norm = _normalizza_chiavi(storico.copy())
     nuovo_norm = _normalizza_chiavi(nuovo.copy())
 
+    # Assegna un progressivo intra-file in modo che se ci sono 2 trade identici validi, diventino 0 e 1 per entrambi i df
+    storico_norm["_dupe_idx"] = storico_norm.groupby(CHIAVE_DEDUP_BASE).cumcount()
+    nuovo_norm["_dupe_idx"] = nuovo_norm.groupby(CHIAVE_DEDUP_BASE).cumcount()
+
     # Concatena: storico prima, nuovo dopo — così drop_duplicates(keep="first")
     # conserva le righe già nello storico in caso di conflitto.
     n_storico = len(storico_norm)
     combined = pd.concat([storico_norm, nuovo_norm], ignore_index=True)
 
     n_prima = len(combined)
-    combined_dedup = combined.drop_duplicates(subset=CHIAVE_DEDUP, keep="first")
+    combined_dedup = combined.drop_duplicates(subset=CHIAVE_DEDUP_BASE + ["_dupe_idx"], keep="first")
     n_duplicate = n_prima - len(combined_dedup)
     n_nuove = len(combined_dedup) - n_storico
 
-    combined_dedup = combined_dedup.sort_values("Data valuta").reset_index(drop=True)
+    combined_dedup = combined_dedup.drop(columns=["_dupe_idx"]).sort_values("Data valuta").reset_index(drop=True)
 
     return {
         "df": combined_dedup,

@@ -23,7 +23,8 @@ from core.store import load_storico, save_storico, merge_storico, STORICO_PATH
 from core.store_conto import (
     load_storico_conto, save_storico_conto, merge_storico_conto, STORICO_CONTO_PATH
 )
-from core import isin_alias, classificazione
+from core import isin_alias, classificazione, omaggi
+from core.backup import create_auto_backup, get_backup_zip_bytes, restore_from_zip
 
 # ============================================================
 # Config Streamlit
@@ -59,7 +60,7 @@ with st.sidebar:
     # Sezione: Gestione dati storici
     # ----------------------------------------------------------
     st.divider()
-    st.markdown("### 📂 Gestione dati")
+    st.markdown("### 📂 Movimentazione azionaria")
 
     storico_sidebar = load_storico()
 
@@ -87,6 +88,7 @@ with st.sidebar:
             st.session_state["_sb_last_hash"] = file_hash_sb
             with st.spinner("Elaborazione e merge in corso..."):
                 try:
+                    create_auto_backup("pre_merge_equity")
                     config = load_config()
                     df_nuovo = load_excel(file_bytes_sb, config)
                     storico_curr = load_storico()
@@ -119,6 +121,7 @@ with st.sidebar:
             st.warning("Eliminare definitivamente lo storico?")
             c1, c2 = st.columns(2)
             if c1.button("Sì, elimina", type="primary", use_container_width=True):
+                create_auto_backup("pre_reset_equity")
                 STORICO_PATH.unlink(missing_ok=True)
                 for key in ["_confirm_reset", "_sb_last_hash", "_sb_merge_result"]:
                     st.session_state.pop(key, None)
@@ -158,6 +161,7 @@ with st.sidebar:
             st.session_state["_sb_conto_last_hash"] = file_hash_conto_sb
             with st.spinner("Elaborazione conto in corso..."):
                 try:
+                    create_auto_backup("pre_merge_conto")
                     config_c = load_config()
                     df_conto_nuovo = load_excel_conto(file_bytes_conto_sb, config_c)
                     storico_conto_curr = load_storico_conto()
@@ -190,6 +194,7 @@ with st.sidebar:
             cc1, cc2 = st.columns(2)
             if cc1.button("Sì, elimina", type="primary",
                           use_container_width=True, key="reset_conto_yes"):
+                create_auto_backup("pre_reset_conto")
                 STORICO_CONTO_PATH.unlink(missing_ok=True)
                 for key in ["_confirm_reset_conto", "_sb_conto_last_hash",
                              "_sb_conto_merge_result"]:
@@ -219,8 +224,34 @@ with st.sidebar:
                 st.caption(", ".join(f"`{x}`" for x in _sb_alias["ignored"]))
             if st.button("🗑️ Rimuovi tutti gli alias", key="del_all_alias",
                          use_container_width=True):
+                create_auto_backup("pre_alias_clear")
                 isin_alias.save_alias_map({}, [])
                 st.rerun()
+
+    # ----------------------------------------------------------
+    # Sicurezza e Backup
+    # ----------------------------------------------------------
+    st.divider()
+    with st.expander("🛡️ Sicurezza & Backup", expanded=False):
+        st.markdown("**Esporta Backup**")
+        st.download_button(
+            label="⬇️ Scarica ZIP Database",
+            data=get_backup_zip_bytes(),
+            file_name="fineco_tax_backup.zip",
+            mime="application/zip",
+            use_container_width=True,
+            help="Scarica tutti gli storici, alias e configurazioni."
+        )
+        st.markdown("**Ripristina da Backup**")
+        upl_backup = st.file_uploader("Carica file .zip", type=["zip"], key="backup_upl")
+        if upl_backup:
+            if st.button("🔄 Conferma Ripristino", use_container_width=True, type="primary"):
+                try:
+                    restore_from_zip(upl_backup.read())
+                    st.success("Ripristino completato!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Errore ripristino: {e}")
 
     st.divider()
     st.caption("Calcolo Tasse Fineco v2.0")
@@ -243,7 +274,7 @@ st.markdown(
 # (la chiave di cache è csv_bytes, che cambia ad ogni modifica del file).
 # ============================================================
 @st.cache_data(show_spinner="Elaborazione in corso...")
-def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}", class_bytes: bytes = b"{}") -> dict:
+def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}", class_bytes: bytes = b"{}", omaggi_bytes: bytes = b"[]") -> dict:
     """
     Esegue la pipeline completa sul dataset (passato come CSV bytes).
     Calcola sia CMP che LIFO — il filtro metodo è applicato a valle.
@@ -263,7 +294,8 @@ def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}", class_bytes: byt
 
     dataset = classifica_operazioni(df, config)
 
-    engine_eq = EngineEquity()
+    _omaggi_list = json.loads(omaggi_bytes)
+    engine_eq = EngineEquity(omaggi_confermati=_omaggi_list)
     engine_eq.processa(dataset["equity"])
 
     # CFD/Futures esclusi dal calcolo fiscale.
@@ -311,6 +343,7 @@ def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}", class_bytes: byt
         "posizioni_cfd_aperte": pd.DataFrame(),
         "warnings_eq": engine_eq.warnings,
         "info_eq": engine_eq.info_log,
+        "pending_omaggi": engine_eq.pending_omaggi,
         "df_commissioni_yearly": df_comm_yearly,
         "col_commissioni": col_comm,
     }
@@ -361,7 +394,7 @@ else:
     # --- Flusso di fallback: caricamento diretto senza salvataggio ---
     st.info(
         "ℹ️ Nessun dato storico. Carica un file qui sotto per un'analisi immediata, "
-        "oppure usa **📂 Gestione dati** nella sidebar per salvare i dati in modo permanente."
+        "oppure usa **📂 Movimentazione azionaria** nella sidebar per salvare i dati in modo permanente."
     )
 
     uploaded_file = st.file_uploader(
@@ -414,14 +447,97 @@ _alias_bytes = json.dumps(_alias_data["alias"], sort_keys=True).encode()
 _classificazioni_data = classificazione.load_classificazioni()
 _classificazioni_bytes = json.dumps(_classificazioni_data, sort_keys=True).encode()
 
+_omaggi_data = omaggi.load_omaggi()
+_omaggi_bytes = json.dumps(_omaggi_data, sort_keys=True).encode()
+
 try:
-    risultati = elabora_tutto(csv_bytes, _alias_bytes, _classificazioni_bytes)
+    risultati = elabora_tutto(csv_bytes, _alias_bytes, _classificazioni_bytes, _omaggi_bytes)
 except ValueError as e:
     st.error(f"❌ Errore elaborazione: {e}")
     st.stop()
 except Exception as e:
     st.error(f"❌ Errore imprevisto: {e}")
     st.stop()
+
+# ============================================================
+# Intercettazione Quote Mancanti (Omaggi Pendenti)
+# ============================================================
+pending_omaggi = risultati.get("pending_omaggi", [])
+if pending_omaggi:
+    st.error("🛑 Rilevate Quantità Mancanti in Portafoglio", icon="🚨")
+    st.warning(
+        "Sono state trovate transazioni in cui hai venduto più quote di quante ne risultassero disponibili "
+        "dal calcolo storico. Questo accade spesso con **assegnazioni gratuite** o diritti."
+    )
+    st.info("Scegli come gestire queste vendite. Puoi approvare l'assunzione di **costo zero** per le quote mancanti, ignorarle/escluderle dal calcolo, oppure fermarti e ricontrollare l'Excel.")
+    
+    with st.form("omaggi_form"):
+        st.write("### Operazioni in Sospeso")
+        scelte_omaggi = {}
+        for i, p in enumerate(pending_omaggi):
+            isin = p["isin"]
+            data_vendita = p["data_vendita"]
+            qta_manc = p["quantita_mancante"]
+            # Aggiungiamo l'indice i per garantire che la chiave sia sempre unica per Streamlit
+            chiave_univoca = f"{isin} - {data_vendita} - {qta_manc}_{i}"
+            
+            st.markdown(f"**{p['titolo']} ({isin})**")
+            st.write(f"- **Data vendita:** {data_vendita}")
+            st.write(f"- **Quantità venduta:** {p['quantita_richiesta']:.2f}")
+            st.write(f"- **Disponibili in ptf:** {p['quantita_disponibile']:.2f}")
+            st.write(f"- **Quote scoperte (mancanti):** {qta_manc:.2f}")
+            
+            scelte_omaggi[chiave_univoca] = st.radio(
+                "Azione per questa vendita scoperta:",
+                options=["Attendi (blocca calcolo)", "Conferma come Costo Zero", "Escludi dal calcolo (Ignora)"],
+                index=0,
+                key=f"rad_omaggio_{chiave_univoca}"
+            )
+            st.divider()
+            
+        col_btn1, col_btn2 = st.columns([1, 4])
+        with col_btn1:
+            submit_omaggi = st.form_submit_button("Salva Scelte", type="primary")
+            
+        if submit_omaggi:
+            # Raccogli le approvazioni
+            _nuovi_omaggi = list(_omaggi_data)
+            da_aggiungere = []
+            for i, p in enumerate(pending_omaggi):
+                isin = p["isin"]
+                data_vendita = p["data_vendita"]
+                qta_manc = p["quantita_mancante"]
+                chiave = f"{isin} - {data_vendita} - {qta_manc}_{i}"
+                
+                scelta = scelte_omaggi[chiave]
+                if scelta == "Conferma come Costo Zero":
+                    da_aggiungere.append({
+                        "isin": isin,
+                        "data_vendita": data_vendita,
+                        "quantita_mancante": qta_manc,
+                        "titolo": p["titolo"],
+                        "azione": "costo_zero"
+                    })
+                elif scelta == "Escludi dal calcolo (Ignora)":
+                    da_aggiungere.append({
+                        "isin": isin,
+                        "data_vendita": data_vendita,
+                        "quantita_mancante": qta_manc,
+                        "titolo": p["titolo"],
+                        "azione": "ignora"
+                    })
+
+            if da_aggiungere:
+                _nuovi_omaggi.extend(da_aggiungere)
+                create_auto_backup("pre_approvazione_omaggi")
+                omaggi.save_omaggi(_nuovi_omaggi)
+                st.success("Approvazioni salvate! Ricarico...")
+                st.rerun()
+            else:
+                st.info("Non hai approvato né ignorato nessuna operazione.")
+                
+    st.stop()  # Ferma il rendering del resto dell'app finché ci sono problemi
+
 
 anni_disponibili = risultati["anni"]
 
@@ -463,6 +579,7 @@ if titoli_sconosciuti:
                 st.divider()
                 
             if st.form_submit_button("💾 Salva Classificazione", type="primary"):
+                create_auto_backup("pre_classificazione")
                 _new_class = dict(_classificazioni_data)
                 _new_class.update(scelte_class)
                 classificazione.save_classificazioni(_new_class)
@@ -583,6 +700,7 @@ if not _orphans.empty:
                 st.divider()
 
             if st.form_submit_button("💾 Salva associazioni", type="primary"):
+                create_auto_backup("pre_alias_save")
                 _new_alias   = dict(_alias_data["alias"])
                 _new_ignored = list(_alias_data["ignored"])
                 for _s_isin, _choice in _choices.items():
@@ -672,6 +790,77 @@ with tab1:
     totali_cfd = dati["totali_cfd"]
     rt = dati["rt"]
     col_pm = f"Plus/Minus (€) {metodo}"
+
+    # ----------------------------------------------------------
+    # Filtro per data all'interno dell'anno selezionato
+    # ----------------------------------------------------------
+    import datetime as _dt
+    _date_min_t1 = _dt.date(anno_sel, 1, 1)
+    _date_max_t1 = _dt.date(anno_sel, 12, 31)
+    # Impostiamo di default il filtro all'intero anno per non scartare
+    # operazioni (es. CFD) che potrebbero avvenire al di fuori del range
+    # min-max limitato ai soli movimenti equity.
+
+    with st.expander("🗓️ Filtra per data", expanded=False):
+        _fc0, _fc1, _fc2 = st.columns([1, 4, 4])
+        if _fc0.button("🔄 Reset", key="reset_date_tab1", help="Azzera il filtro date all'anno intero", use_container_width=True):
+            st.session_state["data_da_tab1"] = _date_min_t1
+            st.session_state["data_a_tab1"] = _date_max_t1
+            st.rerun()
+        _data_da_t1 = _fc1.date_input(
+            "Dal", value=_date_min_t1,
+            min_value=_dt.date(anno_sel, 1, 1),
+            max_value=_dt.date(anno_sel, 12, 31),
+            format="DD/MM/YYYY",
+            key="data_da_tab1",
+        )
+        _data_a_t1 = _fc2.date_input(
+            "Al", value=_date_max_t1,
+            min_value=_dt.date(anno_sel, 1, 1),
+            max_value=_dt.date(anno_sel, 12, 31),
+            format="DD/MM/YYYY",
+            key="data_a_tab1",
+        )
+    _filtro_data_attivo_t1 = (
+        _data_da_t1 != _dt.date(anno_sel, 1, 1)
+        or _data_a_t1 != _dt.date(anno_sel, 12, 31)
+    )
+    if not df_eq.empty and "Data Vendita" in df_eq.columns and _filtro_data_attivo_t1:
+        _dv_dates = pd.to_datetime(df_eq["Data Vendita"], format="%d/%m/%Y", errors="coerce").dt.date
+        df_eq = df_eq[
+            (_dv_dates >= _data_da_t1)
+            & (_dv_dates <= _data_a_t1)
+        ].copy()
+        # Ricalcola totali sul filtro date
+        totali_eq["corrispettivi_eur"]   = df_eq["Controvalore Vendita (€)"].sum()
+        totali_eq["costi_eur_cmp"]       = df_eq["Costo Carico (€) CMP"].sum()
+        totali_eq["costi_eur_lifo"]      = df_eq["Costo Carico (€) LIFO"].sum()
+        totali_eq["plus_minus_eur_cmp"]  = df_eq["Plus/Minus (€) CMP"].sum()
+        totali_eq["plus_minus_eur_lifo"] = df_eq["Plus/Minus (€) LIFO"].sum()
+
+        # Filtro CFD per data in Tab1
+        if _risultati_conto is not None:
+            _det_t1 = _risultati_conto["dettaglio"]
+            if not _det_t1.empty and "Anno" in _det_t1.columns and "Data valuta" in _det_t1.columns:
+                _det_t1_filt = _det_t1[
+                    (_det_t1["Anno"] == anno_sel)
+                    & (_det_t1["Data valuta"].dt.date >= _data_da_t1)
+                    & (_det_t1["Data valuta"].dt.date <= _data_a_t1)
+                ]
+                _cfd_pnl_filt = _det_t1_filt["PnL (€)"].sum() if "PnL (€)" in _det_t1_filt.columns else 0.0
+                totali_cfd["pnl_totale_eur"] = _cfd_pnl_filt
+            else:
+                totali_cfd["pnl_totale_eur"] = 0.0
+        else:
+            totali_cfd["pnl_totale_eur"] = 0.0
+
+        # Ricalcola Quadro RT con dati filtrati
+        rt = calcola_quadro_rt(
+            totali_equity=totali_eq,
+            totali_cfd=totali_cfd,
+            minusvalenze_pregresse=minus_pregresse,
+            metodo=metodo,
+        )
 
     # ----------------------------------------------------------
     # KPI cards
@@ -917,10 +1106,12 @@ with tab1:
     # ----------------------------------------------------------
     warnings = risultati["warnings_eq"]
     if warnings:
-        with st.expander(f"⚠️ {len(warnings)} operazioni con storico incompleto"):
+        with st.expander(f"⚠️ {len(warnings)} operazioni con quantità mancante"):
             st.caption(
-                "Queste vendite sono state saltate perché la quantità disponibile "
-                "nel file è insufficiente (storico acquisti non coperto dal file)."
+                "Per queste vendite la quantità in portafoglio era insufficiente "
+                "(spesso accade per diritti assegnati gratuitamente o storico incompleto). "
+                "È stato **assunto un costo di carico pari a ZERO** per la parte mancante, "
+                "al fine di calcolare correttamente la plusvalenza."
             )
             for w in warnings:
                 st.text(w)
@@ -1138,17 +1329,61 @@ with tab3:
         key="anno_tab3",
     )
 
+    # Filtro per data all'interno dell'anno CFD selezionato
+    import datetime as _dt
+    _det_anno_cfd = (
+        _det_conto[_det_conto["Anno"] == _anno_cfd].copy()
+        if not _det_conto.empty else pd.DataFrame()
+    )
+    _cfd_date_min = _dt.date(_anno_cfd, 1, 1)
+    _cfd_date_max = _dt.date(_anno_cfd, 12, 31)
+    # Impostiamo di default il range all'intero anno per coerenza
+
+    with st.expander("🗓️ Filtra per data", expanded=False):
+        _cfd_fc0, _cfd_fc1, _cfd_fc2 = st.columns([1, 4, 4])
+        if _cfd_fc0.button("🔄 Reset", key="reset_date_tab3", help="Azzera il filtro date all'anno intero", use_container_width=True):
+            st.session_state["data_da_tab3"] = _cfd_date_min
+            st.session_state["data_a_tab3"] = _cfd_date_max
+            st.rerun()
+        _cfd_da = _cfd_fc1.date_input(
+            "Dal", value=_cfd_date_min,
+            min_value=_dt.date(_anno_cfd, 1, 1),
+            max_value=_dt.date(_anno_cfd, 12, 31),
+            format="DD/MM/YYYY",
+            key="data_da_tab3",
+        )
+        _cfd_a = _cfd_fc2.date_input(
+            "Al", value=_cfd_date_max,
+            min_value=_dt.date(_anno_cfd, 1, 1),
+            max_value=_dt.date(_anno_cfd, 12, 31),
+            format="DD/MM/YYYY",
+            key="data_a_tab3",
+        )
+
     _riepi_anno = (
         _riepi_conto[_riepi_conto["Anno"] == _anno_cfd].copy()
         if not _riepi_conto.empty else pd.DataFrame()
     )
+    # Applica filtro date al dettaglio (per KPI e tabella strumenti)
+    if not _det_anno_cfd.empty and "Data valuta" in _det_anno_cfd.columns:
+        _det_anno_cfd_filt = _det_anno_cfd[
+            (_det_anno_cfd["Data valuta"].dt.date >= _cfd_da)
+            & (_det_anno_cfd["Data valuta"].dt.date <= _cfd_a)
+        ].copy()
+    else:
+        _det_anno_cfd_filt = _det_anno_cfd.copy()
+
+    # Riepilogo filtrato per data — usato da KPI, grafico e tabella
+    _riepi_anno_filt = riepilogo_per_anno_strumento(_det_anno_cfd_filt)
+    # Se non filtrato prendi il riepilogo precomputed (fallback)
+    _riepi_uso = _riepi_anno_filt if not _det_anno_cfd_filt.empty else _riepi_anno
 
     # ----------------------------------------------------------
     # KPI anno CFD
     # ----------------------------------------------------------
-    _tot_margine = _riepi_anno["Margine variazione (€)"].sum() if not _riepi_anno.empty else 0.0
-    _tot_oneri   = _riepi_anno["Oneri/Proventi (€)"].sum()     if not _riepi_anno.empty else 0.0
-    _tot_cfd     = _riepi_anno["Totale (€)"].sum()             if not _riepi_anno.empty else 0.0
+    _tot_margine = _riepi_uso["Margine variazione (€)"].sum() if not _riepi_uso.empty else 0.0
+    _tot_oneri   = _riepi_uso["Oneri/Proventi (€)"].sum()     if not _riepi_uso.empty else 0.0
+    _tot_cfd     = _riepi_uso["Totale (€)"].sum()             if not _riepi_uso.empty else 0.0
 
     kc1, kc2, kc3 = st.columns(3)
     kc1.metric("Margine variazione", f"{_tot_margine:+,.2f} €",
@@ -1163,8 +1398,8 @@ with tab3:
     # ----------------------------------------------------------
     # Bar chart per strumento
     # ----------------------------------------------------------
-    if not _riepi_anno.empty:
-        _chart_data = _riepi_anno.sort_values("Totale (€)", ascending=True)
+    if not _riepi_uso.empty:
+        _chart_data = _riepi_uso.sort_values("Totale (€)", ascending=True)
 
         fig_cfd = px.bar(
             _chart_data,
@@ -1190,17 +1425,17 @@ with tab3:
     # Tabella dettaglio per strumento
     # ----------------------------------------------------------
     st.subheader(f"📋 Dettaglio per strumento — {_anno_cfd}")
-    if _riepi_anno.empty:
-        st.info(f"Nessuna operazione CFD/Derivati nel {_anno_cfd}.")
+    if _riepi_uso.empty:
+        st.info(f"Nessuna operazione CFD/Derivati nel periodo selezionato.")
     else:
         _cols_tbl = [c for c in [
             "Strumento",
             "Margine variazione (€)",
             "Oneri/Proventi (€)",
             "Totale (€)",
-        ] if c in _riepi_anno.columns]
+        ] if c in _riepi_uso.columns]
         st.dataframe(
-            _riepi_anno[_cols_tbl],
+            _riepi_uso[_cols_tbl],
             hide_index=True,
             use_container_width=True,
         )
@@ -1251,25 +1486,92 @@ with tab3:
 with tab4:
     st.header("🔄 Analisi Trading vs Investing")
     st.write("Confronto performance tra operatività a breve termine (Trading) e lungo termine (Investing). I titoli azionari non ancora classificati verranno richiesti all'apertura dell'app, mentre le operazioni CFD ricadono nativamente nel comparto Trading.")
+
+    # ----------------------------------------------------------
+    # Filtro anno + date per Tab4
+    # ----------------------------------------------------------
+    import datetime as _dt
+    _t4_anni = sorted(anni_disponibili, reverse=True)
+    _t4_col1, _t4_col2 = st.columns([1, 3])
+    with _t4_col1:
+        _t4_anno = st.selectbox(
+            "📅 Anno",
+            options=["Tutti"] + [str(a) for a in _t4_anni],
+            index=0,
+            key="anno_tab4",
+        )
+    with _t4_col2:
+        if _t4_anno != "Tutti":
+            _t4_anno_int = int(_t4_anno)
+            with st.expander("🗓️ Filtra per data", expanded=False):
+                _t4_dc0, _t4_dc1, _t4_dc2 = st.columns([1, 4, 4])
+                
+                _date_min_t4 = _dt.date(_t4_anno_int, 1, 1)
+                _date_max_t4 = _dt.date(_t4_anno_int, 12, 31)
+
+                if _t4_dc0.button("🔄 Reset", key="reset_date_tab4", help="Azzera il filtro date all'anno intero", use_container_width=True):
+                    st.session_state["data_da_tab4"] = _date_min_t4
+                    st.session_state["data_a_tab4"] = _date_max_t4
+                    st.rerun()
+                
+                _t4_da = _t4_dc1.date_input(
+                    "Dal", value=_date_min_t4,
+                    min_value=_date_min_t4,
+                    max_value=_date_max_t4,
+                    format="DD/MM/YYYY",
+                    key="data_da_tab4",
+                )
+                _t4_a = _t4_dc2.date_input(
+                    "Al", value=_dt.date(_t4_anno_int, 12, 31),
+                    min_value=_dt.date(_t4_anno_int, 1, 1),
+                    max_value=_dt.date(_t4_anno_int, 12, 31),
+                    format="DD/MM/YYYY",
+                    key="data_a_tab4",
+                )
+        else:
+            _t4_da = None
+            _t4_a = None
     
     # Costruiamo un dataset combinato per gli anni disponibili
     righe_ti = []
     df_eq_all = risultati.get("df_equity_all", pd.DataFrame())
-    for anno in anni_disponibili:
+
+    # Anni da includere in base al filtro
+    _anni_t4 = [int(_t4_anno)] if _t4_anno != "Tutti" else anni_disponibili
+
+    for anno in _anni_t4:
         # Equity
         if not df_eq_all.empty and "Classe" in df_eq_all.columns:
-            df_eq_anno = df_eq_all[df_eq_all["Anno"] == anno]
-            
+            df_eq_anno = df_eq_all[df_eq_all["Anno"] == anno].copy()
+            # Applica filtro date se attivo
+            if _t4_da is not None and _t4_a is not None and "Data Vendita" in df_eq_anno.columns:
+                _dv_t4 = pd.to_datetime(df_eq_anno["Data Vendita"], format="%d/%m/%Y", errors="coerce").dt.date
+                df_eq_anno = df_eq_anno[
+                    (_dv_t4 >= _t4_da)
+                    & (_dv_t4 <= _t4_a)
+                ]
             pnl_eq_inv = df_eq_anno[df_eq_anno["Classe"] == "Investing"][f"Plus/Minus (€) {metodo}"].sum()
             pnl_eq_trad = df_eq_anno[df_eq_anno["Classe"] == "Trading"][f"Plus/Minus (€) {metodo}"].sum()
         else:
             pnl_eq_inv = 0.0
             pnl_eq_trad = 0.0
-            
-        # CFD (tutto trading)
-        pnl_cfd = _conto_pnl_per_anno.get(anno, 0.0)
+
+        # CFD (tutto trading) — filtrabile per data se dettaglio disponibile
+        if _risultati_conto is not None and _t4_da is not None and _t4_a is not None:
+            _det_t4 = _risultati_conto["dettaglio"]
+            if not _det_t4.empty and "Anno" in _det_t4.columns and "Data valuta" in _det_t4.columns:
+                _det_t4_filt = _det_t4[
+                    (_det_t4["Anno"] == anno)
+                    & (_det_t4["Data valuta"].dt.date >= _t4_da)
+                    & (_det_t4["Data valuta"].dt.date <= _t4_a)
+                ]
+                pnl_cfd = _det_t4_filt["PnL (€)"].sum() if "PnL (€)" in _det_t4_filt.columns else 0.0
+            else:
+                pnl_cfd = _conto_pnl_per_anno.get(anno, 0.0)
+        else:
+            pnl_cfd = _conto_pnl_per_anno.get(anno, 0.0)
         pnl_trad_tot = pnl_eq_trad + pnl_cfd
-        
+
         righe_ti.append({
             "Anno": str(anno),
             "Classe": "Investing",

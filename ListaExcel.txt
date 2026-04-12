@@ -1,0 +1,23 @@
+C:\App AI\Fineco PL & Tax Calculator\Esempio file fineco.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2018.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2019.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2020.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2021.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2022.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2023.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2024.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2025.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2025_calcoli.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\2026.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\Lista Titoli (2025-2026).xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\Lista Titoli (fino a mar 2026).xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\Movimentazione azionaria 2018-2024.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\Movimentazione azionaria 2018-2025.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\Movimentazione azionaria 2025.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\movimenti conto 2023.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\movimenti conto 2024.xlsx
+C:\App AI\Fineco PL & Tax Calculator\Dati usati per creazione\movimenti conto 2025.xlsx
+C:\App AI\Fineco PL & Tax Calculator\NuoviFile\Lista Titoli (2).xlsx
+C:\App AI\Fineco PL & Tax Calculator\NuoviFile\movements_20260412.xlsx
+C:\App AI\Fineco PL & Tax Calculator\output\CalcoloTasse_2025_20260314_1408.xlsx
+C:\App AI\Fineco PL & Tax Calculator\output\CalcoloTasse_2025_20260315_2133.xlsx
