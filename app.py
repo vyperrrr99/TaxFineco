@@ -346,6 +346,7 @@ def elabora_tutto(csv_bytes: bytes, alias_bytes: bytes = b"{}", class_bytes: byt
         "pending_omaggi": engine_eq.pending_omaggi,
         "df_commissioni_yearly": df_comm_yearly,
         "col_commissioni": col_comm,
+        "matches_equity": engine_eq.matches_dataframe(),
     }
 
 
@@ -449,6 +450,13 @@ _classificazioni_bytes = json.dumps(_classificazioni_data, sort_keys=True).encod
 
 _omaggi_data = omaggi.load_omaggi()
 _omaggi_bytes = json.dumps(_omaggi_data, sort_keys=True).encode()
+
+# ---- Bottone Svuota Cache (sidebar) ----
+with st.sidebar:
+    if st.button("🔄 Svuota Cache e Ricalcola", help="Forza il ricalcolo completo cancellando la cache di Streamlit"):
+        elabora_tutto.clear()
+        elabora_conto.clear()
+        st.rerun()
 
 try:
     risultati = elabora_tutto(csv_bytes, _alias_bytes, _classificazioni_bytes, _omaggi_bytes)
@@ -763,11 +771,12 @@ def dati_storico(metodo: str) -> pd.DataFrame:
 # ============================================================
 # TAB NAVIGATION
 # ============================================================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Anno Selezionato",
     "📈 Storico Multi-Anno",
     "📉 CFD / Derivati",
     "🔄 Trading vs Investing",
+    "🔍 Dettaglio Movimenti",
 ])
 
 
@@ -825,20 +834,25 @@ with tab1:
         _data_da_t1 != _dt.date(anno_sel, 1, 1)
         or _data_a_t1 != _dt.date(anno_sel, 12, 31)
     )
-    if not df_eq.empty and "Data Vendita" in df_eq.columns and _filtro_data_attivo_t1:
-        _dv_dates = pd.to_datetime(df_eq["Data Vendita"], format="%d/%m/%Y", errors="coerce").dt.date
-        df_eq = df_eq[
-            (_dv_dates >= _data_da_t1)
-            & (_dv_dates <= _data_a_t1)
-        ].copy()
-        # Ricalcola totali sul filtro date
-        totali_eq["corrispettivi_eur"]   = df_eq["Controvalore Vendita (€)"].sum()
-        totali_eq["costi_eur_cmp"]       = df_eq["Costo Carico (€) CMP"].sum()
-        totali_eq["costi_eur_lifo"]      = df_eq["Costo Carico (€) LIFO"].sum()
-        totali_eq["plus_minus_eur_cmp"]  = df_eq["Plus/Minus (€) CMP"].sum()
-        totali_eq["plus_minus_eur_lifo"] = df_eq["Plus/Minus (€) LIFO"].sum()
+    
+    _riepilogo_cfd_tab1 = pd.DataFrame()
+    
+    if _filtro_data_attivo_t1:
+        # 1. Filtro Equity
+        if not df_eq.empty and "Data Vendita" in df_eq.columns:
+            _dv_dates = pd.to_datetime(df_eq["Data Vendita"], format="%d/%m/%Y", errors="coerce").dt.date
+            df_eq = df_eq[
+                (_dv_dates >= _data_da_t1)
+                & (_dv_dates <= _data_a_t1)
+            ].copy()
+            # Ricalcola totali sul filtro date
+            totali_eq["corrispettivi_eur"]   = df_eq["Controvalore Vendita (€)"].sum()
+            totali_eq["costi_eur_cmp"]       = df_eq["Costo Carico (€) CMP"].sum()
+            totali_eq["costi_eur_lifo"]      = df_eq["Costo Carico (€) LIFO"].sum()
+            totali_eq["plus_minus_eur_cmp"]  = df_eq["Plus/Minus (€) CMP"].sum()
+            totali_eq["plus_minus_eur_lifo"] = df_eq["Plus/Minus (€) LIFO"].sum()
 
-        # Filtro CFD per data in Tab1
+        # 2. Filtro CFD
         if _risultati_conto is not None:
             _det_t1 = _risultati_conto["dettaglio"]
             if not _det_t1.empty and "Anno" in _det_t1.columns and "Data valuta" in _det_t1.columns:
@@ -849,6 +863,7 @@ with tab1:
                 ]
                 _cfd_pnl_filt = _det_t1_filt["PnL (€)"].sum() if "PnL (€)" in _det_t1_filt.columns else 0.0
                 totali_cfd["pnl_totale_eur"] = _cfd_pnl_filt
+                _riepilogo_cfd_tab1 = riepilogo_per_anno_strumento(_det_t1_filt)
             else:
                 totali_cfd["pnl_totale_eur"] = 0.0
         else:
@@ -1065,13 +1080,16 @@ with tab1:
                 "per visualizzare i PnL di futures e CFD e includerli nel Quadro RT."
             )
         else:
-            _riepilogo_conto = _risultati_conto["riepilogo"]
-            _riepilogo_anno  = (
-                _riepilogo_conto[_riepilogo_conto["Anno"] == anno_sel]
-                if not _riepilogo_conto.empty else pd.DataFrame()
-            )
+            if _filtro_data_attivo_t1:
+                _riepilogo_anno = _riepilogo_cfd_tab1
+            else:
+                _riepilogo_conto = _risultati_conto["riepilogo"]
+                _riepilogo_anno  = (
+                    _riepilogo_conto[_riepilogo_conto["Anno"] == anno_sel]
+                    if not _riepilogo_conto.empty else pd.DataFrame()
+                )
             if _riepilogo_anno.empty:
-                st.info(f"Nessuna operazione CFD/Derivati nel {anno_sel}.")
+                st.info(f"Nessuna operazione CFD/Derivati nel periodo selezionato.")
             else:
                 _cols_show = [c for c in [
                     "Strumento",
@@ -1374,9 +1392,7 @@ with tab3:
         _det_anno_cfd_filt = _det_anno_cfd.copy()
 
     # Riepilogo filtrato per data — usato da KPI, grafico e tabella
-    _riepi_anno_filt = riepilogo_per_anno_strumento(_det_anno_cfd_filt)
-    # Se non filtrato prendi il riepilogo precomputed (fallback)
-    _riepi_uso = _riepi_anno_filt if not _det_anno_cfd_filt.empty else _riepi_anno
+    _riepi_uso = riepilogo_per_anno_strumento(_det_anno_cfd_filt)
 
     # ----------------------------------------------------------
     # KPI anno CFD
@@ -1609,3 +1625,137 @@ with tab4:
         )
     else:
         st.info("Nessun dato disponibile.")
+
+# ============================================================
+# TAB 5 — Dettaglio Movimenti
+# ============================================================
+with tab5:
+    st.header("🔍 Dettaglio Movimenti")
+    st.write("Vista analitica delle operazioni di chiusura, con data di apertura e chiusura esatte, per facilitare la rendicontazione (es. Dichiarazione dei Redditi).")
+
+    # Recupera i matches equity
+    df_matches = risultati.get("matches_equity", pd.DataFrame())
+    
+    # Recupera i movimenti CFD
+    df_cfd_det = _risultati_conto["dettaglio"] if _risultati_conto is not None else pd.DataFrame()
+    
+    # Prepara dataset unificato
+    righe_det = []
+    
+    # Aggiungi Equity Matches
+    if not df_matches.empty:
+        for _, r in df_matches.iterrows():
+            righe_det.append({
+                "Strumento": "Equity",
+                "ISIN": r["ISIN"],
+                "Titolo": r["Titolo"],
+                "Data Apertura": pd.to_datetime(r["Data Apertura"], format="%d/%m/%Y").date(),
+                "Data Chiusura": pd.to_datetime(r["Data Chiusura"], format="%d/%m/%Y").date(),
+                "Anno": r["Anno"],
+                "Quantità": r["Quantità"],
+                "Divisa": r["Divisa"],
+                "Costo LIFO (€)": r["Costo Carico (€) LIFO"],
+                "Costo CMP (€)": r["Costo Carico (€) CMP"],
+                "Corrispettivo (€)": r["Controvalore Vendita (€)"],
+                "PnL LIFO (€)": r["Plus/Minus (€) LIFO"],
+                "PnL CMP (€)": r["Plus/Minus (€) CMP"],
+                "Costo Orig LIFO": r.get("Costo Carico (" + r["Divisa"] + ") LIFO", r["Costo Carico (€) LIFO"]),
+                "Costo Orig CMP": r.get("Costo Carico (" + r["Divisa"] + ") CMP", r["Costo Carico (€) CMP"]),
+                "Corrispettivo Orig": r.get("Controvalore Vendita (" + r["Divisa"] + ")", r["Controvalore Vendita (€)"]),
+            })
+            
+    # Aggiungi CFD
+    if not df_cfd_det.empty:
+        for _, r in df_cfd_det.iterrows():
+            d_val = pd.to_datetime(r["Data valuta"]).date() if pd.notna(r["Data valuta"]) else None
+            if d_val:
+                righe_det.append({
+                    "Strumento": "CFD",
+                    "ISIN": "N/D",
+                    "Titolo": r["Strumento"],
+                    "Data Apertura": d_val,
+                    "Data Chiusura": d_val,
+                    "Anno": r["Anno"],
+                    "Quantità": None, # Non disponibile nel file Fineco per i CFD (margini)
+                    "Divisa": "EUR",
+                    "Costo LIFO (€)": 0.0,
+                    "Costo CMP (€)": 0.0,
+                    "Corrispettivo (€)": r["PnL (€)"], # Per semplificare mostriamo il netto
+                    "PnL LIFO (€)": r["PnL (€)"],
+                    "PnL CMP (€)": r["PnL (€)"],
+                    "Costo Orig LIFO": 0.0,
+                    "Costo Orig CMP": 0.0,
+                    "Corrispettivo Orig": r["PnL (€)"],
+                })
+
+    if not righe_det:
+        st.info("Nessun movimento da visualizzare.")
+    else:
+        df_unificato = pd.DataFrame(righe_det)
+        
+        # Filtri
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+        
+        with col_f1:
+            anni_disp = sorted(df_unificato["Anno"].dropna().unique().tolist(), reverse=True)
+            filtro_anno = st.selectbox("📅 Anno", options=["Tutti"] + anni_disp, key="t5_anno")
+        
+        with col_f2:
+            filtro_strum = st.selectbox("📈 Tipo Strumento", options=["Entrambi", "Solo Equity", "Solo CFD"], key="t5_strum")
+        
+        with col_f3:
+            import datetime as _dt
+            min_date = df_unificato["Data Chiusura"].min()
+            max_date = df_unificato["Data Chiusura"].max()
+            date_range = st.date_input("🗓️ Range Date (Chiusura)", value=(min_date, max_date), min_value=min_date, max_value=max_date, key="t5_dates")
+        
+        with col_f4:
+            titoli_disp = sorted(df_unificato["Titolo"].dropna().unique().tolist())
+            filtro_titoli = st.multiselect("📌 Filtra Titoli", options=titoli_disp, key="t5_titoli")
+            
+        # Applica filtri
+        df_filt = df_unificato.copy()
+        
+        if filtro_anno != "Tutti":
+            df_filt = df_filt[df_filt["Anno"] == filtro_anno]
+            
+        if filtro_strum == "Solo Equity":
+            df_filt = df_filt[df_filt["Strumento"] == "Equity"]
+        elif filtro_strum == "Solo CFD":
+            df_filt = df_filt[df_filt["Strumento"] == "CFD"]
+            
+        if len(date_range) == 2:
+            df_filt = df_filt[(df_filt["Data Chiusura"] >= date_range[0]) & (df_filt["Data Chiusura"] <= date_range[1])]
+            
+        if filtro_titoli:
+            df_filt = df_filt[df_filt["Titolo"].isin(filtro_titoli)]
+            
+        # Scegli le colonne in base al metodo (LIFO/CMP)
+        col_costo = f"Costo {metodo} (€)"
+        col_pnl = f"PnL {metodo} (€)"
+        col_costo_orig = f"Costo Orig {metodo}"
+        
+        df_disp = pd.DataFrame()
+        df_disp["Titolo"] = df_filt["Titolo"]
+        df_disp["ISIN"] = df_filt["ISIN"]
+        df_disp["Data Apertura"] = pd.to_datetime(df_filt["Data Apertura"]).dt.strftime("%d/%m/%Y")
+        df_disp["Data Chiusura"] = pd.to_datetime(df_filt["Data Chiusura"]).dt.strftime("%d/%m/%Y")
+        df_disp["Quantità"] = df_filt["Quantità"]
+        df_disp["Valore Iniziale (€)"] = df_filt[f"Costo {metodo} (€)"]
+        df_disp["Valore Finale (€)"] = df_filt["Corrispettivo (€)"]
+        df_disp["PnL (€)"] = df_filt[f"PnL {metodo} (€)"]
+        df_disp["Divisa"] = df_filt["Divisa"]
+        df_disp["Val. Iniz. (Orig)"] = df_filt[f"Costo Orig {metodo}"]
+        df_disp["Val. Fin. (Orig)"] = df_filt["Corrispettivo Orig"]
+        df_disp["Tipo"] = df_filt["Strumento"]
+        
+        # Formattazione
+        for col in ["Valore Iniziale (€)", "Valore Finale (€)", "PnL (€)", "Val. Iniz. (Orig)", "Val. Fin. (Orig)"]:
+            df_disp[col] = df_disp[col].round(2)
+            
+        # Summary
+        tot_pnl = df_disp["PnL (€)"].sum()
+        st.metric(f"Totale PnL Filtrato ({metodo})", f"{tot_pnl:+,.2f} €")
+        
+        st.dataframe(df_disp, use_container_width=True, hide_index=True)
+

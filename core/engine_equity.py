@@ -30,6 +30,7 @@ class LottoLIFO:
     quantita: float
     costo_totale_eur: float
     costo_totale_orig: float
+    data_acquisto: pd.Timestamp
 
     def costo_unitario_eur(self) -> float:
         if self.quantita < 1e-9:
@@ -93,6 +94,39 @@ class RecordPlusvalenza:
         return self.controvalore_vendita_orig - self.costo_carico_orig_lifo
 
 
+@dataclass
+class MatchRecord:
+    isin: str
+    titolo: str
+    data_apertura: pd.Timestamp
+    data_chiusura: pd.Timestamp
+    quantita: float
+    divisa: str
+    controvalore_vendita_eur: float
+    controvalore_vendita_orig: float
+    costo_carico_eur_cmp: float
+    costo_carico_eur_lifo: float
+    costo_carico_orig_cmp: float
+    costo_carico_orig_lifo: float
+    tipo_operazione: str = "Vendita"
+    
+    @property
+    def plus_minus_eur_cmp(self) -> float:
+        return self.controvalore_vendita_eur - self.costo_carico_eur_cmp
+
+    @property
+    def plus_minus_eur_lifo(self) -> float:
+        return self.controvalore_vendita_eur - self.costo_carico_eur_lifo
+
+    @property
+    def plus_minus_orig_cmp(self) -> float:
+        return self.controvalore_vendita_orig - self.costo_carico_orig_cmp
+
+    @property
+    def plus_minus_orig_lifo(self) -> float:
+        return self.controvalore_vendita_orig - self.costo_carico_orig_lifo
+
+
 # ============================================================
 # Funzione LIFO core
 # ============================================================
@@ -101,19 +135,19 @@ def _calcola_costo_lifo(
     lotti: list[LottoLIFO],
     quantita_da_vendere: float,
     epsilon: float = 1e-6,
-) -> tuple[float, float, list[LottoLIFO]]:
+) -> tuple[float, float, list[LottoLIFO], list[dict]]:
     """
     Estrae il costo di carico secondo metodo LIFO dall'ultimo lotto verso i precedenti.
 
     Returns:
-        (costo_eur, costo_orig, lotti_aggiornati)
-        Se i lotti non coprono la quantità, restituisce un costo parziale
-        e aggiunge un warning nei log (non crasha).
+        (costo_eur, costo_orig, lotti_aggiornati, matches)
+        matches: list di dict con le frazioni prelevate per tener traccia delle date.
     """
     costo_eur = 0.0
     costo_orig = 0.0
     lotti_rimanenti = deepcopy(lotti)
     quantita_residua = quantita_da_vendere
+    matches = []
 
     while quantita_residua > epsilon and lotti_rimanenti:
         ultimo = lotti_rimanenti[-1]
@@ -127,6 +161,13 @@ def _calcola_costo_lifo(
         costo_eur_lotto = qta_da_lotto * ultimo.costo_unitario_eur()
         costo_orig_lotto = qta_da_lotto * ultimo.costo_unitario_orig()
 
+        matches.append({
+            "data_acquisto": ultimo.data_acquisto,
+            "quantita": qta_da_lotto,
+            "costo_eur_lifo": costo_eur_lotto,
+            "costo_orig_lifo": costo_orig_lotto,
+        })
+
         costo_eur += costo_eur_lotto
         costo_orig += costo_orig_lotto
 
@@ -138,7 +179,7 @@ def _calcola_costo_lifo(
         if ultimo.quantita < epsilon:
             lotti_rimanenti.pop()
 
-    return costo_eur, costo_orig, lotti_rimanenti
+    return costo_eur, costo_orig, lotti_rimanenti, matches
 
 
 # ============================================================
@@ -162,6 +203,7 @@ class EngineEquity:
 
         # Output
         self.records: list[RecordPlusvalenza] = []
+        self.matches: list[MatchRecord] = []
         self.warnings: list[str] = []
         self.info_log: list[str] = []
         self.pending_omaggi: list[dict] = []
@@ -193,7 +235,8 @@ class EngineEquity:
         df_sorted = df.copy()
         df_sorted["_sort_prio"] = df_sorted.apply(_calc_prio, axis=1)
         # Assicuriamoci che Data valuta non sia NaT e ordiniamo per Data valuta e priorità
-        df_sorted.sort_values(by=["Data valuta", "_sort_prio"], ascending=[True, True], inplace=True)
+        # Usiamo kind="mergesort" per garantire un ordinamento stabile a parità di data/priorità
+        df_sorted.sort_values(by=["Data valuta", "_sort_prio"], ascending=[True, True], inplace=True, kind="mergesort")
         df_sorted.drop(columns=["_sort_prio"], inplace=True)
 
         for _, row in df_sorted.iterrows():
@@ -237,6 +280,38 @@ class EngineEquity:
                 riga[f"Plus/Minus ({r.divisa}) CMP"] = round(r.plus_minus_orig_cmp, 2)
             righe.append(riga)
 
+        return pd.DataFrame(righe)
+
+    def matches_dataframe(self) -> pd.DataFrame:
+        """Restituisce il dettaglio degli abbinamenti (matches) in formato DataFrame."""
+        if not self.matches:
+            return pd.DataFrame()
+        
+        righe = []
+        for m in self.matches:
+            riga = {
+                "Anno": m.data_chiusura.year,
+                "ISIN": m.isin,
+                "Titolo": m.titolo,
+                "Data Apertura": m.data_apertura.strftime("%d/%m/%Y"),
+                "Data Chiusura": m.data_chiusura.strftime("%d/%m/%Y"),
+                "Quantità": round(m.quantita, 4),
+                "Divisa": m.divisa,
+                "Costo Carico (€) CMP": round(m.costo_carico_eur_cmp, 2),
+                "Costo Carico (€) LIFO": round(m.costo_carico_eur_lifo, 2),
+                "Controvalore Vendita (€)": round(m.controvalore_vendita_eur, 2),
+                "Plus/Minus (€) CMP": round(m.plus_minus_eur_cmp, 2),
+                "Plus/Minus (€) LIFO": round(m.plus_minus_eur_lifo, 2),
+                "Tipo": m.tipo_operazione,
+            }
+            if m.divisa != "EUR":
+                riga[f"Costo Carico ({m.divisa}) CMP"] = round(m.costo_carico_orig_cmp, 2)
+                riga[f"Costo Carico ({m.divisa}) LIFO"] = round(m.costo_carico_orig_lifo, 2)
+                riga[f"Controvalore Vendita ({m.divisa})"] = round(m.controvalore_vendita_orig, 2)
+                riga[f"Plus/Minus ({m.divisa}) CMP"] = round(m.plus_minus_orig_cmp, 2)
+                riga[f"Plus/Minus ({m.divisa}) LIFO"] = round(m.plus_minus_orig_lifo, 2)
+            
+            righe.append(riga)
         return pd.DataFrame(righe)
 
     def totali(self, anno: int = None) -> dict:
@@ -299,10 +374,10 @@ class EngineEquity:
 
         # --- Router ---
         if "aumento capitale" in desc:
-            self._gestisci_aumento_capitale(isin, titolo, quantita, divisa)
+            self._gestisci_aumento_capitale(isin, titolo, quantita, divisa, data)
 
         elif segno == "A" or "acquisto" in desc:
-            self._gestisci_acquisto(isin, divisa, quantita, controvalore_eur, controvalore_orig)
+            self._gestisci_acquisto(isin, divisa, quantita, controvalore_eur, controvalore_orig, data)
 
         elif segno == "V" or "rimborso" in desc or "vendita" in desc:
             tipo_op = "Rimborso" if "rimborso" in desc else "Vendita"
@@ -326,6 +401,7 @@ class EngineEquity:
     def _gestisci_acquisto(
         self, isin: str, divisa: str,
         quantita: float, controvalore_eur: float, controvalore_orig: float,
+        data_acquisto: pd.Timestamp
     ):
         self._init_isin(isin, divisa)
 
@@ -334,7 +410,7 @@ class EngineEquity:
         self._portfolio_cmp[isin].costo_totale_orig += controvalore_orig
 
         self._portfolio_lifo[isin].append(
-            LottoLIFO(quantita, controvalore_eur, controvalore_orig)
+            LottoLIFO(quantita, controvalore_eur, controvalore_orig, data_acquisto)
         )
 
     def _gestisci_vendita(
@@ -378,7 +454,7 @@ class EngineEquity:
                 if isin not in self._portfolio_lifo:
                     self._portfolio_lifo[isin] = []
                 self._portfolio_lifo[isin].append(
-                    LottoLIFO(qta_mancante, 0.0, 0.0)
+                    LottoLIFO(qta_mancante, 0.0, 0.0, data)
                 )
             else:
                 # Non approvato: aggiungilo a pending_omaggi per farlo richiedere dalla UI
@@ -396,7 +472,7 @@ class EngineEquity:
                 return
 
         # --- Calcolo LIFO ---
-        costo_eur_lifo, costo_orig_lifo, lotti_aggiornati = _calcola_costo_lifo(
+        costo_eur_lifo, costo_orig_lifo, lotti_aggiornati, matches_lifo = _calcola_costo_lifo(
             self._portfolio_lifo.get(isin, []),
             quantita,
             self.epsilon,
@@ -408,6 +484,30 @@ class EngineEquity:
         costo_medio_orig = pos_cmp.costo_medio_orig()
         costo_eur_cmp = costo_medio_eur * quantita
         costo_orig_cmp = costo_medio_orig * quantita
+
+        # Genera i MatchRecord pro-quota sulle date identificate dal LIFO
+        for match in matches_lifo:
+            q_match = match["quantita"]
+            if quantita > self.epsilon:
+                ratio = q_match / quantita
+            else:
+                ratio = 0.0
+                
+            self.matches.append(MatchRecord(
+                isin=isin,
+                titolo=titolo,
+                data_apertura=match["data_acquisto"],
+                data_chiusura=data,
+                quantita=q_match,
+                divisa=divisa,
+                controvalore_vendita_eur=controvalore_eur * ratio,
+                controvalore_vendita_orig=controvalore_orig * ratio,
+                costo_carico_eur_cmp=costo_medio_eur * q_match,
+                costo_carico_eur_lifo=match["costo_eur_lifo"],
+                costo_carico_orig_cmp=costo_medio_orig * q_match,
+                costo_carico_orig_lifo=match["costo_orig_lifo"],
+                tipo_operazione=tipo_op
+            ))
 
         # Aggiorna CMP
         pos_cmp.quantita -= quantita
@@ -437,7 +537,7 @@ class EngineEquity:
         ))
 
     def _gestisci_aumento_capitale(
-        self, isin: str, titolo: str, quantita: float, divisa: str,
+        self, isin: str, titolo: str, quantita: float, divisa: str, data: pd.Timestamp
     ):
         """
         Aumento di capitale: aggiunge azioni a costo zero.
@@ -453,7 +553,7 @@ class EngineEquity:
                 quantita=quantita, costo_totale_eur=0.0,
                 costo_totale_orig=0.0, divisa=divisa,
             )
-            self._portfolio_lifo[isin] = [LottoLIFO(quantita, 0.0, 0.0)]
+            self._portfolio_lifo[isin] = [LottoLIFO(quantita, 0.0, 0.0, data)]
         else:
             # Titolo esistente: aggiunge quantità, costo invariato
             pos = self._portfolio_cmp[isin]
@@ -468,4 +568,4 @@ class EngineEquity:
                     proporzione = lotto.quantita / qta_totale_prima
                     lotto.quantita += quantita * proporzione
             else:
-                lotti.append(LottoLIFO(quantita, 0.0, 0.0))
+                lotti.append(LottoLIFO(quantita, 0.0, 0.0, data))

@@ -156,7 +156,7 @@ def load_excel(
         df["Segno"] = df["Segno"].str.upper()
 
     # --- Ordinamento cronologico (fondamentale per LIFO) ---
-    df.sort_values(by="Data valuta", ascending=True, inplace=True)
+    df.sort_values(by="Data valuta", ascending=True, inplace=True, kind="mergesort")
     df.reset_index(drop=True, inplace=True)
 
     # --- Log sintetico ---
@@ -282,7 +282,7 @@ def load_excel_conto(
             df.loc[df[col].str.lower() == "nan", col] = ""
 
     # --- Ordinamento cronologico ---
-    df.sort_values(by="Data valuta", ascending=True, inplace=True)
+    df.sort_values(by="Data valuta", ascending=True, inplace=True, kind="mergesort")
     df.reset_index(drop=True, inplace=True)
 
     print(f"[loader_conto] Caricate {len(df)} righe")

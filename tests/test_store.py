@@ -13,7 +13,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.store import load_storico, save_storico, merge_storico, CHIAVE_DEDUP
+from core.store import load_storico, save_storico, merge_storico, CHIAVE_DEDUP_BASE
 
 
 # ============================================================
@@ -180,21 +180,19 @@ class TestMergeStorico:
 
     def test_storico_vuoto_deduplicazione_interna_file_sorgente(self):
         """
-        Regressione: il file sorgente può contenere righe interne duplicate
-        (es. split o doppio export). Con storico vuoto il primo caricamento
-        deve deduplicarle; il secondo caricamento non deve trovare «nuove» righe.
+        Nel nuovo comportamento, le righe identiche all'interno dello stesso file
+        sorgente vengono considerate transazioni intraday valide e mantenute.
         """
-        # Riga duplicata internamente al file sorgente
         riga = _row()
         df_con_dup = _df(riga, riga)  # stesso record due volte
 
         result1 = merge_storico(pd.DataFrame(), df_con_dup)
-        # Il primo caricamento salva solo 1 riga unica
-        assert len(result1["df"]) == 1
-        assert result1["n_nuove"] == 1
-        assert result1["n_duplicate"] == 1
+        # Entrambe le righe vengono mantenute
+        assert len(result1["df"]) == 2
+        assert result1["n_nuove"] == 2
+        assert result1["n_duplicate"] == 0
 
-        # Il secondo caricamento non deve trovare nuove righe né espandere lo storico
+        # Il secondo caricamento dello STESSO file non deve trovare nuove righe
         result2 = merge_storico(result1["df"], df_con_dup)
-        assert len(result2["df"]) == 1
+        assert len(result2["df"]) == 2
         assert result2["n_nuove"] == 0

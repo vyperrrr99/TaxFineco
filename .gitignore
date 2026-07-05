@@ -44,3 +44,15 @@ movimentazione_storico.csv
 # OS
 .DS_Store
 Thumbs.db
+
+# Debug / analisi temporanei
+check_*.py
+debug_*.py
+edit_app.py
+tmp_*.csv
+output.txt
+ListaExcel.txt
+implementation_plan.md
+
+# Claude
+.claude/

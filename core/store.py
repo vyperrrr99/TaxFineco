@@ -45,7 +45,7 @@ def save_storico(df: pd.DataFrame) -> None:
     Crea la cartella data/ se non esiste.
     """
     STORICO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df_sorted = df.sort_values("Data valuta").reset_index(drop=True)
+    df_sorted = df.sort_values("Data valuta", kind="mergesort").reset_index(drop=True)
     df_sorted.to_csv(STORICO_PATH, index=False)
 
 
@@ -77,7 +77,7 @@ def merge_storico(storico: pd.DataFrame, nuovo: pd.DataFrame) -> dict:
         df_nuovo_norm["_dupe_idx"] = df_nuovo_norm.groupby(CHIAVE_DEDUP_BASE).cumcount()
         df_dedup = df_nuovo_norm.drop_duplicates(subset=CHIAVE_DEDUP_BASE + ["_dupe_idx"], keep="first").drop(columns=["_dupe_idx"])
         n_duplicate = n_prima - len(df_dedup)
-        df_sorted = df_dedup.sort_values("Data valuta").reset_index(drop=True)
+        df_sorted = df_dedup.sort_values("Data valuta", kind="mergesort").reset_index(drop=True)
         return {
             "df": df_sorted,
             "n_nuove": len(df_sorted),
@@ -101,7 +101,7 @@ def merge_storico(storico: pd.DataFrame, nuovo: pd.DataFrame) -> dict:
     n_duplicate = n_prima - len(combined_dedup)
     n_nuove = len(combined_dedup) - n_storico
 
-    combined_dedup = combined_dedup.drop(columns=["_dupe_idx"]).sort_values("Data valuta").reset_index(drop=True)
+    combined_dedup = combined_dedup.drop(columns=["_dupe_idx"]).sort_values("Data valuta", kind="mergesort").reset_index(drop=True)
 
     return {
         "df": combined_dedup,
