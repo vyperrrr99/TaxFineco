@@ -21,8 +21,6 @@ colonne_attese:
   - "Prezzo"
   - "Cambio"
   - "Controvalore"
-  - "QTY"
-  - "Val Unit €"
 
 # Tipi di operazione riconosciuti
 # Equity: operazioni su azioni, ETF, bond, ETP
@@ -35,8 +33,34 @@ operazioni_equity:
 # Aggiungi qui le stringhe esatte che compaiono nella colonna "Descrizione" del tuo Excel
 operazioni_cfd:
   - "Compravendita CFD"
+  - "Compravendita future"
   - "CFD"
   - "Futures"
 
 # Soglia numerica per considerare una quantità "zero" (floating point safety)
 epsilon: 1.0e-6
+
+# Anno a partire dal quale verificare le vendite senza corrispondenza acquisto.
+# Operazioni precedenti a questo anno non vengono controllate (lo storico pre-2025
+# è considerato completo e già riconciliato).
+isin_alias_check_from_anno: 2025
+
+# ============================================================
+# Movimentazione conto corrente (CFD / Derivati)
+# ============================================================
+
+# Colonne attese nel file Excel della movimentazione del conto Fineco.
+# Il file ha struttura diversa dal file di movimentazione titoli.
+colonne_conto_attese:
+  - "Data valuta"
+  - "Entrate"
+  - "Descrizione"
+  - "Descrizione Completa"
+
+# Voci della colonna "Descrizione" che identificano movimenti CFD/derivati.
+# Queste voci vengono usate per filtrare le righe rilevanti ai fini fiscali.
+descrizioni_cfd_conto:
+  - "Margine di variazione derivati"
+  - "Oneri CFD"
+  - "Proventi Societari CFD Long"
+  - "Oneri Societari CFD Short"

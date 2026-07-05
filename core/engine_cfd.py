@@ -172,18 +172,20 @@ class EngineCFD:
         # Quantità effettivamente chiusa in questa operazione
         qta_chiusa = min(qta_aperta, qta_chiesta)
 
-        # PnL per la parte chiusa
+        # Controvalore proporzionale per la quantità effettivamente chiusa.
+        # Usiamo il Controvalore (già in EUR, già include moltiplicatore contratto
+        # e tasso di cambio giornaliero) invece della differenza di prezzo, che
+        # ignorerebbe moltiplicatori (es. FTSEMIB ×2) e variazioni FX intraday.
+        ctv_apertura_chiusa = (qta_chiusa / qta_aperta) * pos.controvalore_apertura_eur
+        ctv_chiusura_chiusa = (qta_chiusa / qta_chiesta) * controvalore_chiusura_eur
+
+        # PnL realizzato basato su Controvalore
         if direzione_pos == "LONG":
-            # Long: guadagno se prezzo_chiusura > prezzo_apertura
-            pnl_per_unita = prezzo_chiusura - pos.prezzo_medio_apertura
+            # Long: guadagno se ctv_chiusura > ctv_apertura
+            pnl_eur = ctv_chiusura_chiusa - ctv_apertura_chiusa
         else:
-            # Short: guadagno se prezzo_chiusura < prezzo_apertura
-            pnl_per_unita = pos.prezzo_medio_apertura - prezzo_chiusura
-
-        pnl_eur = pnl_per_unita * qta_chiusa
-
-        # Controvalore proporzionale dell'apertura per la parte chiusa
-        controvalore_apertura_chiusa = (qta_chiusa / qta_aperta) * pos.controvalore_apertura_eur
+            # Short: guadagno se ctv_apertura > ctv_chiusura
+            pnl_eur = ctv_apertura_chiusa - ctv_chiusura_chiusa
 
         # Registra sempre (filtro anno applicato a valle in risultati_dataframe/totali)
         self.records.append(RecordCFD(
@@ -196,8 +198,8 @@ class EngineCFD:
             prezzo_medio_apertura=pos.prezzo_medio_apertura,
             prezzo_chiusura=prezzo_chiusura,
             pnl_eur=pnl_eur,
-            controvalore_apertura_eur=controvalore_apertura_chiusa,
-            controvalore_chiusura_eur=(qta_chiusa / qta_chiesta) * controvalore_chiusura_eur,
+            controvalore_apertura_eur=ctv_apertura_chiusa,
+            controvalore_chiusura_eur=ctv_chiusura_chiusa,
         ))
 
         pos.pnl_realizzato_eur += pnl_eur
